@@ -29,6 +29,7 @@ export interface Photo {
   imageUrl: string;
   driveFileId?: string;
   driveWebViewLink?: string;
+  syncedToDrive?: boolean;
   description: string;
   points: number;
   matchesPlayed: number;

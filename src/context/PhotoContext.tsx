@@ -62,18 +62,20 @@ interface PhotoContextType {
   finishCurrentDynamic: () => void;
   deleteDynamic: (dynamicId: string) => void;
 
-  // Google Drive Personal Integration
+  // Google Drive Personal Integration (Admin account)
   googleUser: User | null;
   driveFolder: DriveFolderInfo | null;
   isConnectingDrive: boolean;
   isUploadingToDrive: boolean;
   connectGoogleDrive: () => Promise<DriveFolderInfo | null>;
   disconnectGoogleDrive: () => Promise<void>;
+  setManualDriveFolder: (folderIdOrUrl: string) => void;
+  syncPhotosToDrive: () => Promise<{ success: number; failed: number }>;
   uploadFileToDriveFolder: (file: File | Blob, fileName: string) => Promise<{
     fileId: string;
     directImageUrl: string;
     webViewLink?: string;
-  }>;
+  } | null>;
 }
 
 const STORAGE_KEY = 'fotografia_unalmed_photos_v2';
@@ -290,7 +292,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => unsubscribe();
   }, []);
 
-  // Connect Google Drive function
+  // Connect Google Drive function (Admin)
   const connectGoogleDrive = async (): Promise<DriveFolderInfo | null> => {
     setIsConnectingDrive(true);
     try {
@@ -298,7 +300,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!authResult) throw new Error('No se completó la autenticación con Google.');
 
       setGoogleUser(authResult.user);
-      // Create or locate the public folder in their personal drive
+      // Create or locate the public folder in the admin's personal drive
       const folder = await getOrCreatePublicDriveFolder(
         authResult.accessToken,
         FOLDER_NAME_DEFAULT
@@ -318,26 +320,81 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setGoogleUser(null);
   };
 
+  const setManualDriveFolder = (input: string) => {
+    if (!input.trim()) return;
+    let folderId = input.trim();
+    const match = folderId.match(/folders\/([a-zA-Z0-9_-]+)/);
+    if (match) {
+      folderId = match[1];
+    }
+    const folderInfo: DriveFolderInfo = {
+      folderId,
+      folderName: 'Fotografia Unalmed - Fotos del Campus (Vinculada)',
+      webViewLink: `https://drive.google.com/drive/folders/${folderId}`,
+      isPublic: true,
+    };
+    setDriveFolder(folderInfo);
+  };
+
+  const syncPhotosToDrive = async (): Promise<{ success: number; failed: number }> => {
+    const token = await getAccessToken();
+    if (!token || !driveFolder) {
+      throw new Error('Debes iniciar sesión con Google Drive como administrador para sincronizar a la carpeta.');
+    }
+
+    const pendingPhotos = photos.filter((p) => !p.driveFileId);
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const photo of pendingPhotos) {
+      try {
+        let blob: Blob;
+        if (photo.imageUrl.startsWith('data:')) {
+          const res = await fetch(photo.imageUrl);
+          blob = await res.blob();
+        } else {
+          const res = await fetch(photo.imageUrl);
+          blob = await res.blob();
+        }
+
+        const safeTitle = photo.title.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30);
+        const fileName = `${safeTitle}_${photo.id}.jpg`;
+        const resDrive = await uploadPhotoToDrive(token, driveFolder.folderId, blob, fileName);
+
+        setPhotos((prev) =>
+          prev.map((p) =>
+            p.id === photo.id
+              ? {
+                  ...p,
+                  driveFileId: resDrive.fileId,
+                  driveWebViewLink: resDrive.webViewLink,
+                  imageUrl: resDrive.directImageUrl,
+                  syncedToDrive: true,
+                }
+              : p
+          )
+        );
+        successCount++;
+      } catch (err) {
+        console.error('Error sincronizando foto individual a Drive:', photo.id, err);
+        failedCount++;
+      }
+    }
+
+    return { success: successCount, failed: failedCount };
+  };
+
+  // Upload file to Drive folder: ONLY uploads if token is present; does NOT prompt popup for students!
   const uploadFileToDriveFolder = async (
     file: File | Blob,
     fileName: string
-  ): Promise<{ fileId: string; directImageUrl: string; webViewLink?: string }> => {
-    let token = await getAccessToken();
-    let currentFolder = driveFolder;
+  ): Promise<{ fileId: string; directImageUrl: string; webViewLink?: string } | null> => {
+    const token = await getAccessToken();
+    const currentFolder = driveFolder;
 
-    // If no active token, prompt sign-in popup
-    if (!token) {
-      const authResult = await googleSignIn();
-      if (!authResult) throw new Error('Se requiere autenticación para subir a Google Drive.');
-      setGoogleUser(authResult.user);
-      token = authResult.accessToken;
-      if (!currentFolder) {
-        currentFolder = await getOrCreatePublicDriveFolder(token, FOLDER_NAME_DEFAULT);
-        setDriveFolder(currentFolder);
-      }
-    } else if (!currentFolder) {
-      currentFolder = await getOrCreatePublicDriveFolder(token, FOLDER_NAME_DEFAULT);
-      setDriveFolder(currentFolder);
+    // If no token or folder is available, return null without bothering the visitor
+    if (!token || !currentFolder) {
+      return null;
     }
 
     setIsUploadingToDrive(true);
@@ -348,6 +405,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         directImageUrl: res.directImageUrl,
         webViewLink: res.webViewLink,
       };
+    } catch (err) {
+      console.warn('No se pudo subir a Drive en segundo plano:', err);
+      return null;
     } finally {
       setIsUploadingToDrive(false);
     }
@@ -698,6 +758,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         isUploadingToDrive,
         connectGoogleDrive,
         disconnectGoogleDrive,
+        setManualDriveFolder,
+        syncPhotosToDrive,
         uploadFileToDriveFolder,
       }}
     >

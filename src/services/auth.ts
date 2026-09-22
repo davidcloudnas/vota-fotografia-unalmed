@@ -15,6 +15,7 @@ export const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
 // Required Workspace Drive scope
 provider.addScope('https://www.googleapis.com/auth/drive.file');
+provider.setCustomParameters({ prompt: 'select_account' });
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
@@ -45,13 +46,21 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('No se pudo obtener el token de acceso de Google Drive');
+      throw new Error('No se pudo obtener el token de acceso de Google Drive de las credenciales.');
     }
 
     cachedAccessToken = credential.accessToken;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: unknown) {
     console.error('Error al iniciar sesión con Google:', error);
+    const firebaseError = error as { code?: string; message?: string };
+    if (firebaseError?.code === 'auth/popup-blocked') {
+      throw new Error('El navegador bloqueó la ventana emergente de Google. Por favor permite popups en tu navegador o abre la app en una nueva pestaña.');
+    } else if (firebaseError?.code === 'auth/popup-closed-by-user') {
+      throw new Error('La ventana emergente de Google fue cerrada antes de autorizar los permisos.');
+    } else if (firebaseError?.code === 'auth/unauthorized-domain') {
+      throw new Error('Dominio no autorizado en Firebase. Abre la app en una pestaña nueva con el botón superior de AI Studio.');
+    }
     throw error;
   } finally {
     isSigningIn = false;

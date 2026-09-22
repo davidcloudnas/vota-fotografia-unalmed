@@ -34,11 +34,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
     isConnectingDrive,
     connectGoogleDrive,
     disconnectGoogleDrive,
+    setManualDriveFolder,
+    syncPhotosToDrive,
   } = usePhotos();
 
   const [passwordInput, setPasswordInput] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successNotice, setSuccessNotice] = useState('');
+  const [driveAuthError, setDriveAuthError] = useState('');
+  const [manualFolderInput, setManualFolderInput] = useState('');
+  const [syncStatusMsg, setSyncStatusMsg] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Form state for creating a new dynamic
   const [newTitle, setNewTitle] = useState('');
@@ -207,29 +213,29 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </button>
           </div>
 
-          {/* SECCIÓN GOOGLE DRIVE: ALMACENAMIENTO PERSONAL EN LA NUBE */}
+          {/* SECCIÓN GOOGLE DRIVE: ALMACENAMIENTO DE ADMINISTRADOR EN LA NUBE */}
           <div className="p-6 sm:p-8 rounded-3xl bg-neutral-900 space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold block mb-1">
-                  Almacenamiento en Google Drive Personal
+                  Cuenta de Administrador • Google Drive
                 </span>
                 <h2 className="text-2xl font-bold text-white tracking-tight">
-                  Carpeta Pública de Fotografías
+                  Carpeta Pública Oficial del Campus
                 </h2>
-                <p className="text-xs text-neutral-400 font-light mt-0.5">
-                  Las fotos se guardan en tu Drive y se configuran con enlace público de solo lectura para que cualquier visitante las vea directamente.
+                <p className="text-xs text-neutral-400 font-light mt-0.5 max-w-2xl">
+                  Las fotos de los estudiantes se archivan en tu carpeta de Google Drive como administrador. Los estudiantes no necesitan conectar ninguna cuenta ni crear carpetas.
                 </p>
               </div>
 
               {googleUser ? (
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   {driveFolder?.webViewLink && (
                     <a
                       href={driveFolder.webViewLink}
                       target="_blank"
                       rel="noreferrer"
-                      className="px-4 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-neutral-950 text-xs font-bold transition"
+                      className="px-4 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-neutral-950 text-xs font-bold transition inline-flex items-center gap-1.5"
                     >
                       Abrir carpeta en Drive ↗
                     </a>
@@ -246,19 +252,46 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </button>
                 </div>
               ) : (
-                <button
-                  onClick={() => connectGoogleDrive()}
-                  disabled={isConnectingDrive}
-                  className="px-5 py-2.5 rounded-full bg-white hover:bg-neutral-200 text-neutral-950 font-bold text-xs transition cursor-pointer self-start sm:self-auto shadow-md"
-                >
-                  {isConnectingDrive ? 'Conectando...' : 'Conectar mi Google Drive'}
-                </button>
+                <div className="flex flex-col sm:items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setDriveAuthError('');
+                      try {
+                        await connectGoogleDrive();
+                      } catch (err: unknown) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        setDriveAuthError(msg);
+                      }
+                    }}
+                    disabled={isConnectingDrive}
+                    className="inline-flex items-center gap-3 px-5 py-2.5 rounded-full bg-white hover:bg-neutral-100 text-neutral-900 font-semibold text-xs transition cursor-pointer shadow-md disabled:opacity-50"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 48 48">
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                    </svg>
+                    <span>{isConnectingDrive ? 'Conectando con Google...' : 'Vincular mi Google Drive'}</span>
+                  </button>
+                </div>
               )}
             </div>
 
-            <div className="p-5 rounded-2xl bg-neutral-950 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-neutral-400">Estado de Google Drive:</span>
+            {driveAuthError && (
+              <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-800/40 text-rose-300 text-xs space-y-1">
+                <p className="font-semibold">Aviso de conexión con Google:</p>
+                <p>{driveAuthError}</p>
+                <p className="text-[11px] text-neutral-400 mt-1">
+                  Nota: Si tu navegador bloquea la ventana emergente de Google dentro de esta vista previa, abre la aplicación en una pestaña nueva con el botón en la esquina superior de AI Studio.
+                </p>
+              </div>
+            )}
+
+            <div className="p-5 rounded-2xl bg-neutral-950 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-neutral-400">Estado de Google Drive del Administrador:</span>
                 <span
                   className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
                     googleUser
@@ -266,26 +299,100 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       : 'bg-neutral-800 text-neutral-400'
                   }`}
                 >
-                  {googleUser ? `Conectado (${googleUser.email})` : 'No vinculado'}
+                  {googleUser ? `Conectado (${googleUser.email})` : 'Sesión pendiente'}
                 </span>
               </div>
 
               {driveFolder && (
-                <>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-neutral-400">Carpeta creada en tu Drive:</span>
+                <div className="space-y-2 pt-2 border-t border-neutral-900">
+                  <div className="flex flex-wrap items-center justify-between text-xs gap-2">
+                    <span className="text-neutral-400">Nombre de la carpeta:</span>
                     <span className="text-white font-semibold">{driveFolder.folderName}</span>
                   </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-neutral-400">Visibilidad pública:</span>
-                    <span className="text-emerald-400 font-semibold">Cualquiera con el enlace puede ver</span>
+                  <div className="flex flex-wrap items-center justify-between text-xs gap-2">
+                    <span className="text-neutral-400">ID de carpeta:</span>
+                    <span className="text-neutral-300 font-mono text-[11px]">{driveFolder.folderId}</span>
                   </div>
-                </>
+                  <div className="flex flex-wrap items-center justify-between text-xs gap-2">
+                    <span className="text-neutral-400">Visibilidad pública:</span>
+                    <span className="text-emerald-400 font-semibold">Pública (Cualquiera con el enlace puede ver)</span>
+                  </div>
+                </div>
               )}
 
-              <p className="text-xs text-neutral-500 font-light pt-2 border-t border-neutral-900 leading-relaxed">
-                Cada nueva fotografía subida desde la pestaña "Subir foto" generará un archivo dentro de esta carpeta pública en tu Drive personal y compartirá la URL pública optimizada con toda la comunidad.
-              </p>
+              {/* Sincronización de fotos de estudiantes a la carpeta de Drive */}
+              <div className="pt-3 border-t border-neutral-900 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                    Sincronización de Fotografías
+                  </h4>
+                  <p className="text-xs text-neutral-400">
+                    Fotos registradas en la app:{' '}
+                    <strong className="text-white">{photos.length}</strong> • Fotos con enlace a tu Drive:{' '}
+                    <strong className="text-amber-400">
+                      {photos.filter((p) => p.driveFileId).length}
+                    </strong>
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setSyncStatusMsg('');
+                    setIsSyncing(true);
+                    try {
+                      const res = await syncPhotosToDrive();
+                      setSyncStatusMsg(
+                        `¡Sincronización terminada! ${res.success} fotos añadidas a tu carpeta pública en Drive.`
+                      );
+                    } catch (err: unknown) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      setSyncStatusMsg(`Aviso: ${msg}`);
+                    } finally {
+                      setIsSyncing(false);
+                    }
+                  }}
+                  disabled={isSyncing || !googleUser}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:bg-neutral-800 disabled:text-neutral-500 text-neutral-950 font-bold text-xs transition cursor-pointer self-start sm:self-auto"
+                >
+                  {isSyncing ? 'Sincronizando a Drive...' : 'Sincronizar fotos a mi Drive'}
+                </button>
+              </div>
+
+              {syncStatusMsg && (
+                <div className="p-3 rounded-xl bg-neutral-900 text-amber-400 text-xs font-medium">
+                  {syncStatusMsg}
+                </div>
+              )}
+
+              {/* Vincular manualmente una carpeta existente */}
+              <div className="pt-3 border-t border-neutral-900 space-y-2">
+                <span className="text-xs font-semibold text-neutral-300 block">
+                  O vincula manualmente una carpeta de Drive existente:
+                </span>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={manualFolderInput}
+                    onChange={(e) => setManualFolderInput(e.target.value)}
+                    placeholder="Pega el enlace o ID de tu carpeta pública de Google Drive"
+                    className="flex-1 px-4 py-2 rounded-xl bg-neutral-900 text-xs text-white placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (manualFolderInput.trim()) {
+                        setManualDriveFolder(manualFolderInput);
+                        setManualFolderInput('');
+                        alert('Carpeta vinculada correctamente para la aplicación.');
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold transition"
+                  >
+                    Guardar Carpeta
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
