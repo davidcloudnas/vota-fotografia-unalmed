@@ -40,6 +40,35 @@ export function isSharedStoreConfigured(): boolean {
 }
 
 /**
+ * Test connectivity with a given Google Apps Script or Webhook URL
+ */
+export async function testSyncUrlConnection(url: string): Promise<{ success: boolean; message: string }> {
+  if (!url || !url.trim().startsWith('http')) {
+    return { success: false, message: 'La URL no es válida. Debe comenzar con https://' };
+  }
+  try {
+    const res = await fetchWithTimeout(url.trim(), { method: 'GET', redirect: 'follow' }, 6000);
+    if (res.ok) {
+      return {
+        success: true,
+        message: '¡Conexión exitosa! El script de Google respondió y la base de datos está vinculada.',
+      };
+    } else {
+      return {
+        success: false,
+        message: `El servidor respondió con código HTTP ${res.status}. Verifica que el despliegue esté como "Aplicación web" y acceso "Cualquier usuario".`,
+      };
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      message: `No se pudo conectar (${msg}). Revisa si diste los permisos de Google Drive al implementar.`,
+    };
+  }
+}
+
+/**
  * Get name of active sync provider for display in Admin panel
  */
 export function getActiveSyncProviderName(): string {
@@ -340,22 +369,24 @@ export function mergeAppState(
     hasChanges = true;
   }
 
-  // 3. Merge photos and their cumulative votes
-  const remoteMap = new Map<string, Photo>();
-  (remote.photos || []).forEach((rp) => {
-    if (!allDeletedIds.has(rp.id)) {
-      remoteMap.set(rp.id, rp);
+  // 3. Merge photos:
+  // If remote has an explicit photos array, remote is authoritative for the catalogue.
+  // Any photo deleted on another device will no longer be in remote.photos and will be cleanly removed locally.
+  const remotePhotosList = remote.photos || [];
+  const mergedPhotos: Photo[] = [];
+
+  remotePhotosList.forEach((remotePhoto) => {
+    if (allDeletedIds.has(remotePhoto.id)) return;
+    const localPhoto = filteredLocalPhotos.find((lp) => lp.id === remotePhoto.id);
+    if (!localPhoto) {
+      mergedPhotos.push(remotePhoto);
+      hasChanges = true;
+      return;
     }
-  });
 
-  const localIds = new Set(filteredLocalPhotos.map((p) => p.id));
-  const mergedPhotos: Photo[] = filteredLocalPhotos.map((localPhoto) => {
-    const remotePhoto = remoteMap.get(localPhoto.id);
-    if (!remotePhoto) return localPhoto;
-
-    // Merge comments
+    // Photo exists in both: merge votes and comments taking the highest
     const commentMap = new Map<string, CommentItem>();
-    localPhoto.comments.forEach((c) => commentMap.set(c.id, c));
+    (localPhoto.comments || []).forEach((c) => commentMap.set(c.id, c));
     (remotePhoto.comments || []).forEach((rc) => {
       const existing = commentMap.get(rc.id);
       if (!existing) {
@@ -379,39 +410,32 @@ export function mergeAppState(
     if (
       higherPoints !== localPhoto.points ||
       higherMatches !== localPhoto.matchesPlayed ||
-      higherSwipeLikes !== localPhoto.swipeLikes
+      higherSwipeLikes !== localPhoto.swipeLikes ||
+      localPhoto.imageUrl !== remotePhoto.imageUrl
     ) {
       hasChanges = true;
     }
 
-    return {
-      ...localPhoto,
-      title: remotePhoto.title || localPhoto.title,
-      author: remotePhoto.author || localPhoto.author,
+    mergedPhotos.push({
+      ...remotePhoto,
       imageUrl: remotePhoto.imageUrl || localPhoto.imageUrl,
-      description: remotePhoto.description || localPhoto.description,
       points: higherPoints,
       matchesPlayed: higherMatches,
       matchesWon: higherWins,
       swipeLikes: higherSwipeLikes,
       swipePasses: higherSwipePasses,
       comments: Array.from(commentMap.values()),
-      driveFileId: localPhoto.driveFileId || remotePhoto.driveFileId,
-      driveWebViewLink: localPhoto.driveWebViewLink || remotePhoto.driveWebViewLink,
-      syncedToDrive: localPhoto.syncedToDrive || remotePhoto.syncedToDrive,
-    };
+      driveFileId: remotePhoto.driveFileId || localPhoto.driveFileId,
+      driveWebViewLink: remotePhoto.driveWebViewLink || localPhoto.driveWebViewLink,
+      syncedToDrive: remotePhoto.syncedToDrive || localPhoto.syncedToDrive,
+    });
   });
 
-  // Include any new photos from remote that were not local and NOT deleted
-  const newRemotePhotos: Photo[] = [];
-  (remote.photos || []).forEach((remotePhoto) => {
-    if (!localIds.has(remotePhoto.id) && !allDeletedIds.has(remotePhoto.id)) {
-      newRemotePhotos.push(remotePhoto);
-      hasChanges = true;
-    }
-  });
-  if (newRemotePhotos.length > 0) {
-    mergedPhotos.unshift(...newRemotePhotos);
+  // If remote is pristine/brand new (never had any sync), allow keeping local photos
+  if (!remote.updatedAt && mergedPhotos.length === 0 && filteredLocalPhotos.length > 0) {
+    mergedPhotos.push(...filteredLocalPhotos);
+  } else if (filteredLocalPhotos.length !== mergedPhotos.length) {
+    hasChanges = true;
   }
 
   // 4. Dynamic session
@@ -439,11 +463,39 @@ export function mergeAppState(
     hasChanges = true;
   }
 
+  // 5. Merge closed / historical dynamics list
+  const dynamicsMap = new Map<string, DynamicSession>();
+  (local.dynamics || []).forEach((d) => {
+    if (!isOpeningDynamic(d)) {
+      dynamicsMap.set(d.id, d);
+    }
+  });
+  (remote.dynamics || []).forEach((rd) => {
+    if (isOpeningDynamic(rd)) return;
+    const existing = dynamicsMap.get(rd.id);
+    if (!existing) {
+      dynamicsMap.set(rd.id, rd);
+      hasChanges = true;
+    } else {
+      if (rd.isClosed && !existing.isClosed) {
+        dynamicsMap.set(rd.id, rd);
+        hasChanges = true;
+      }
+    }
+  });
+
+  const mergedDynamics = Array.from(dynamicsMap.values()).sort(
+    (a, b) => (b.startedAt || 0) - (a.startedAt || 0)
+  );
+  if (mergedDynamics.length !== (local.dynamics || []).length) {
+    hasChanges = true;
+  }
+
   return {
     photos: mergedPhotos,
     totalVotesCount: newTotalVotes,
     activeDynamic: mergedActiveDynamic,
-    dynamics: local.dynamics,
+    dynamics: mergedDynamics,
     deletedPhotoIds: Array.from(allDeletedIds),
     hasChanges,
   };

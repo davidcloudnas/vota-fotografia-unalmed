@@ -56,6 +56,7 @@ interface PhotoContextType {
   openPhotoModal: (photo: Photo) => void;
   closePhotoModal: () => void;
   resetAllData: () => void;
+  clearLocalCache: () => Promise<void>;
   deletePhoto: (photoId: string) => void;
 
   // Realtime Global Synchronization (Multi-user)
@@ -65,6 +66,9 @@ interface PhotoContextType {
   lastGlobalSyncTime: number | null;
   syncGlobalVotes: () => Promise<boolean>;
   publishCurrentStateToGlobal: () => Promise<boolean>;
+  refreshFromCloud: () => Promise<void>;
+  userNotice: string | null;
+  setUserNotice: (msg: string | null) => void;
 
   // Admin configuration
   isAdmin: boolean;
@@ -260,6 +264,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const [isSyncingGlobalVotes, setIsSyncingGlobalVotes] = useState(false);
   const [lastGlobalSyncTime, setLastGlobalSyncTime] = useState<number | null>(null);
+  const [userNotice, setUserNotice] = useState<string | null>(null);
   const isSyncConfigured = isSharedStoreConfigured();
   const syncProviderName = getActiveSyncProviderName();
   const syncTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -624,9 +629,19 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           );
           if (merged.hasChanges) {
             setTotalVotesCount(merged.totalVotesCount);
-            if (merged.activeDynamic) setActiveDynamic(merged.activeDynamic);
-            if (merged.dynamics) setDynamics(merged.dynamics);
-            if (merged.deletedPhotoIds) setDeletedPhotoIds(merged.deletedPhotoIds);
+            setActiveDynamic(merged.activeDynamic);
+            setDynamics(merged.dynamics || []);
+            setDeletedPhotoIds(merged.deletedPhotoIds || []);
+            setActiveDuel((prevDuel) => {
+              if (
+                !prevDuel ||
+                !merged.photos.some((p) => p.id === prevDuel[0].id) ||
+                !merged.photos.some((p) => p.id === prevDuel[1].id)
+              ) {
+                return getRandomPair(merged.photos);
+              }
+              return prevDuel;
+            });
             return merged.photos;
           }
           return prev;
@@ -1002,9 +1017,20 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return updatedPhotos;
     });
 
+    setUserNotice('Foto eliminada. Recuerda refrescar la página en tu teléfono u otros dispositivos para ver los cambios de inmediato.');
+    setTimeout(() => setUserNotice(null), 8000);
+
     if (selectedPhotoId === photoId) {
       setSelectedPhotoId(null);
     }
+
+    setActiveDuel((prevDuel) => {
+      if (prevDuel && (prevDuel[0].id === photoId || prevDuel[1].id === photoId)) {
+        const remaining = photos.filter((p) => p.id !== photoId);
+        return getRandomPair(remaining);
+      }
+      return prevDuel;
+    });
   };
 
   const openPhotoModal = (photo: Photo) => {
@@ -1049,10 +1075,24 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setActiveDynamic(closedDynamic);
     setDynamics((prev) => {
       const exists = prev.some((d) => d.id === closedDynamic.id);
-      if (exists) {
-        return prev.map((d) => (d.id === closedDynamic.id ? closedDynamic : d));
-      }
-      return [closedDynamic, ...prev];
+      const nextDynamics = exists
+        ? prev.map((d) => (d.id === closedDynamic.id ? closedDynamic : d))
+        : [closedDynamic, ...prev];
+
+      latestStateRef.current.activeDynamic = closedDynamic;
+      latestStateRef.current.dynamics = nextDynamics;
+
+      pushRemoteSharedState({
+        version: 1,
+        updatedAt: Date.now(),
+        totalVotesCount,
+        photos,
+        activeDynamic: closedDynamic,
+        dynamics: nextDynamics,
+        deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+      }).catch((e) => console.warn('Error sincronizando cierre de dinámica:', e));
+
+      return nextDynamics;
     });
   }, [activeDynamic, photos, totalVotesCount]);
 
@@ -1062,16 +1102,16 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     isUserActionRef.current = true;
 
-    setPhotos((prev) =>
-      prev.map((p) => ({
-        ...p,
-        points: 1200,
-        matchesPlayed: 0,
-        matchesWon: 0,
-        swipeLikes: 0,
-        swipePasses: 0,
-      }))
-    );
+    const resetPhotos = photos.map((p) => ({
+      ...p,
+      points: 1200,
+      matchesPlayed: 0,
+      matchesWon: 0,
+      swipeLikes: 0,
+      swipePasses: 0,
+    }));
+
+    setPhotos(resetPhotos);
     setTotalVotesCount(0);
 
     const newDynamic: DynamicSession = {
@@ -1088,30 +1128,122 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     setActiveDynamic(newDynamic);
-    setActiveDuel(getRandomPair(photos));
+    setActiveDuel(getRandomPair(resetPhotos));
+
+    latestStateRef.current.photos = resetPhotos;
+    latestStateRef.current.totalVotesCount = 0;
+    latestStateRef.current.activeDynamic = newDynamic;
+
+    pushRemoteSharedState({
+      version: 1,
+      updatedAt: Date.now(),
+      totalVotesCount: 0,
+      photos: resetPhotos,
+      activeDynamic: newDynamic,
+      dynamics: latestStateRef.current.dynamics,
+      deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+    }).catch((e) => console.warn('Error sincronizando inicio de dinámica:', e));
   };
 
   const deleteDynamic = (dynamicId: string) => {
     isUserActionRef.current = true;
-    setDynamics((prev) => prev.filter((d) => d.id !== dynamicId));
+    const nextActive = activeDynamic?.id === dynamicId ? null : activeDynamic;
     if (activeDynamic?.id === dynamicId) {
       setActiveDynamic(null);
     }
+    setDynamics((prev) => {
+      const nextDynamics = prev.filter((d) => d.id !== dynamicId);
+      latestStateRef.current.dynamics = nextDynamics;
+      latestStateRef.current.activeDynamic = nextActive;
+
+      pushRemoteSharedState({
+        version: 1,
+        updatedAt: Date.now(),
+        totalVotesCount: latestStateRef.current.totalVotesCount,
+        photos: latestStateRef.current.photos,
+        activeDynamic: nextActive,
+        dynamics: nextDynamics,
+        deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+      }).catch((e) => console.warn('Error sincronizando eliminación de dinámica:', e));
+
+      return nextDynamics;
+    });
   };
 
   const resetAllData = () => {
+    isUserActionRef.current = true;
     setPhotos([]);
     setTotalVotesCount(0);
     setActiveDuel(null);
     setDynamics([]);
     setActiveDynamic(null);
     setDriveFolder(null);
+    setDeletedPhotoIds([]);
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(VOTES_COUNTER_KEY);
     localStorage.removeItem(DYNAMICS_KEY);
     localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
     localStorage.removeItem(DRIVE_FOLDER_KEY);
+    localStorage.removeItem(DELETED_PHOTOS_KEY);
+
+    latestStateRef.current = {
+      photos: [],
+      totalVotesCount: 0,
+      activeDynamic: null,
+      dynamics: [],
+      deletedPhotoIds: [],
+    };
+
+    // Push empty state to remote store so cloud is cleared too
+    pushRemoteSharedState({
+      version: 1,
+      updatedAt: Date.now(),
+      totalVotesCount: 0,
+      photos: [],
+      activeDynamic: null,
+      dynamics: [],
+      deletedPhotoIds: [],
+    }).catch((e) => console.warn('Error al vaciar datos remotos:', e));
   };
+
+  const clearLocalCache = async () => {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(VOTES_COUNTER_KEY);
+    localStorage.removeItem(DYNAMICS_KEY);
+    localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
+    localStorage.removeItem(DRIVE_FOLDER_KEY);
+    localStorage.removeItem(DELETED_PHOTOS_KEY);
+
+    setPhotos([]);
+    setTotalVotesCount(0);
+    setActiveDuel(null);
+    setDynamics([]);
+    setActiveDynamic(null);
+    setDeletedPhotoIds([]);
+    latestStateRef.current = {
+      photos: [],
+      totalVotesCount: 0,
+      activeDynamic: null,
+      dynamics: [],
+      deletedPhotoIds: [],
+    };
+
+    await syncGlobalVotes();
+  };
+
+  const refreshFromCloud = useCallback(async () => {
+    setIsSyncingGlobalVotes(true);
+    try {
+      await clearLocalCache();
+      setUserNotice('✓ Catálogo actualizado con las últimas fotos de Google Drive.');
+      setTimeout(() => setUserNotice(null), 4000);
+    } catch {
+      setUserNotice('Error al actualizar desde la nube.');
+      setTimeout(() => setUserNotice(null), 3000);
+    } finally {
+      setIsSyncingGlobalVotes(false);
+    }
+  }, [clearLocalCache]);
 
   const selectedPhoto = photos.find((p) => p.id === selectedPhotoId) || null;
 
@@ -1132,6 +1264,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         openPhotoModal,
         closePhotoModal,
         resetAllData,
+        clearLocalCache,
         deletePhoto,
         isSyncConfigured,
         syncProviderName,
@@ -1139,6 +1272,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         lastGlobalSyncTime,
         syncGlobalVotes,
         publishCurrentStateToGlobal,
+        refreshFromCloud,
+        userNotice,
+        setUserNotice,
         isAdmin,
         loginAdmin,
         logoutAdmin,

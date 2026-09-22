@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { usePhotos } from '../context/PhotoContext';
 import { AdminVoteModeSetting } from '../types';
 import { APP_CONFIG } from '../config';
-import { fetchVercelDiagnostics, VercelDiagnostics } from '../services/sharedStore';
+import { fetchVercelDiagnostics, VercelDiagnostics, testSyncUrlConnection } from '../services/sharedStore';
 
 interface AdminViewProps {
   onGoToVoting: () => void;
@@ -24,6 +24,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     photos,
     deletePhoto,
     resetAllData,
+    clearLocalCache,
     activeDynamic,
     isVotingOpen,
     timeRemainingSeconds,
@@ -73,6 +74,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [isPublishingLocal, setIsPublishingLocal] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+  const [testingSyncUrl, setTestingSyncUrl] = useState(false);
+  const [testSyncResult, setTestSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [clearingCache, setClearingCache] = useState(false);
+  const [clearCacheMsg, setClearCacheMsg] = useState('');
 
   // Form state for creating a new dynamic
   const [newTitle, setNewTitle] = useState('');
@@ -607,6 +612,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   onChange={(e) => {
                     setSyncUrlInput(e.target.value);
                     setSyncUrlSaved(false);
+                    setTestSyncResult(null);
                   }}
                   placeholder="https://script.google.com/macros/s/.../exec"
                   className="flex-1 px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-800 text-white text-xs font-mono placeholder-neutral-600 focus:outline-none focus:border-amber-400"
@@ -622,7 +628,38 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 >
                   {syncUrlSaved ? '✓ URL Guardada' : 'Guardar URL'}
                 </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setTestingSyncUrl(true);
+                    setTestSyncResult(null);
+                    const targetUrl = syncUrlInput.trim() || APP_CONFIG.syncApiUrl;
+                    const res = await testSyncUrlConnection(targetUrl);
+                    setTestSyncResult(res);
+                    setTestingSyncUrl(false);
+                    if (res.success) {
+                      await syncGlobalVotes();
+                    }
+                  }}
+                  disabled={testingSyncUrl}
+                  className="px-4 py-2 rounded-xl bg-amber-400/20 hover:bg-amber-400/30 text-amber-300 font-bold text-xs transition cursor-pointer shrink-0"
+                >
+                  {testingSyncUrl ? 'Probando...' : '🧪 Probar Conexión'}
+                </button>
               </div>
+
+              {/* Resultado de la prueba de conexión */}
+              {testSyncResult && (
+                <div
+                  className={`p-3 rounded-xl text-xs font-medium ${
+                    testSyncResult.success
+                      ? 'bg-emerald-950/70 border border-emerald-500/40 text-emerald-300'
+                      : 'bg-rose-950/70 border border-rose-500/40 text-rose-300'
+                  }`}
+                >
+                  {testSyncResult.message}
+                </div>
+              )}
 
               {/* Resultado del diagnóstico de Vercel */}
               {vercelDiag && (
@@ -666,12 +703,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <div className="p-4 rounded-xl bg-neutral-900 border border-amber-400/30 space-y-3 text-xs">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-amber-400">
-                      Código probado para Google Apps Script (Almacena en tu Drive sin límite de 9KB):
+                      Código probado para Google Apps Script (Almacena en tu Drive el archivo unalmed_database.json):
                     </span>
                     <button
                       type="button"
                       onClick={() => {
                         const code = `// Google Apps Script para Fotografia Unalmed
+// Guarda la base de datos completa directamente en tu Google Drive
 var DB_FILENAME = "unalmed_database.json";
 
 function doGet(e) {
@@ -714,6 +752,7 @@ function saveState(data) {
     var file = files.next();
     file.setContent(jsonStr);
   } else {
+    // Se crea en la raíz de tu Drive la primera vez que se sincroniza
     DriveApp.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
   }
 }`;
@@ -728,13 +767,13 @@ function saveState(data) {
                   </div>
 
                   <ol className="list-decimal pl-4 space-y-1 text-neutral-300 text-[11px]">
-                    <li>Ve a <strong>script.google.com</strong> y crea un nuevo proyecto llamado <code>Unalmed Sync</code>.</li>
-                    <li>Reemplaza el código con el bloque copiado y guarda (Ctrl+S).</li>
+                    <li>Ve a <strong>script.google.com</strong> e inicia sesión con tu cuenta Google (la misma de tu Drive).</li>
+                    <li>Crea un nuevo proyecto, pega el código y guárdalo (Ctrl+S).</li>
                     <li>Haz clic en <strong>Implementar &gt; Nueva implementación</strong>.</li>
-                    <li>Selecciona tipo <strong>Aplicación web</strong>.</li>
-                    <li>En <em>Ejecutar como</em>: <strong>Yo (tu cuenta)</strong>.</li>
-                    <li>En <em>Quién tiene acceso</em>: <strong>Cualquier usuario (incluso anónimos)</strong>.</li>
-                    <li>Copia la <strong>URL de la aplicación web</strong> (termina en <code>/exec</code>) y pégala en el campo de arriba.</li>
+                    <li>Tipo: <strong>Aplicación web</strong>.</li>
+                    <li><em>Ejecutar como:</em> <strong>Yo (tu cuenta)</strong>.</li>
+                    <li><em>Quién tiene acceso:</em> <strong>Cualquier usuario (incluso anónimos)</strong>.</li>
+                    <li>Copia la <strong>URL de la aplicación web</strong> (terminada en <code>/exec</code>), pégala arriba y haz clic en <strong>Guardar URL</strong> y luego en <strong>🧪 Probar Conexión</strong>.</li>
                   </ol>
                 </div>
               )}
@@ -1029,7 +1068,28 @@ function saveState(data) {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  disabled={clearingCache}
+                  onClick={async () => {
+                    setClearingCache(true);
+                    setClearCacheMsg('Limpiando memoria...');
+                    try {
+                      await clearLocalCache();
+                      setClearCacheMsg('✓ Memoria local limpiada y catálogo sincronizado con la nube.');
+                    } catch {
+                      setClearCacheMsg('Error al sincronizar.');
+                    } finally {
+                      setClearingCache(false);
+                      setTimeout(() => setClearCacheMsg(''), 4000);
+                    }
+                  }}
+                  className="px-3.5 py-2.5 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition cursor-pointer"
+                  title="Elimina fotos viejas o residuales almacenadas en este dispositivo y consulta la nube"
+                >
+                  {clearingCache ? 'Limpiando...' : '🧹 Limpiar memoria del teléfono'}
+                </button>
                 <button
                   onClick={onGoToUpload}
                   className="px-4 py-2.5 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white transition cursor-pointer"
@@ -1065,6 +1125,20 @@ function saveState(data) {
                   )
                 )}
               </div>
+            </div>
+
+            {clearCacheMsg && (
+              <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-medium animate-fadeIn">
+                {clearCacheMsg}
+              </div>
+            )}
+
+            {/* Automatic refresh tip */}
+            <div className="p-3.5 bg-neutral-900/70 border border-neutral-800/80 rounded-xl text-xs text-neutral-400 flex items-center gap-2.5">
+              <span className="text-amber-400 text-sm">💡</span>
+              <p className="leading-relaxed">
+                <strong className="text-neutral-200">Sincronización automática:</strong> Cada vez que un usuario o tú refrescan la página (o deslizan hacia abajo en el celular), la app limpia fotos viejas y descarga la versión oficial guardada en tu Google Drive. También puedes pulsar el botón <strong>↻</strong> en la barra superior en cualquier momento.
+              </p>
             </div>
 
             {photos.length === 0 ? (

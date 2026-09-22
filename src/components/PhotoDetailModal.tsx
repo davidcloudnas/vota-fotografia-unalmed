@@ -153,6 +153,8 @@ export const PhotoDetailModal: React.FC = () => {
                         type="button"
                         onClick={() => {
                           deletePhoto(selectedPhoto.id);
+                          setConfirmDelete(false);
+                          closePhotoModal();
                         }}
                         className="flex-1 py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 font-bold text-xs text-white transition cursor-pointer"
                       >
