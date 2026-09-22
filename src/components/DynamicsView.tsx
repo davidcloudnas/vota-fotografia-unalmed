@@ -207,15 +207,9 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
         <div>
-          <span className="text-xs uppercase tracking-widest text-neutral-400 font-semibold block mb-1">
-            Torneos y Desafíos Temporales
-          </span>
           <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-            Dinámicas de Votación
+            Dinámicas
           </h1>
-          <p className="text-sm text-neutral-400 font-light mt-1">
-            Cada dinámica reúne los duelos de la comunidad durante un tiempo determinado o hasta su cierre, inmortalizando a los Top 3 ganadores.
-          </p>
         </div>
 
         {isAdmin && (

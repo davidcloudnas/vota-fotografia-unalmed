@@ -62,11 +62,7 @@ function MainContent() {
 
       {/* Minimalist Footer */}
       <footer className="w-full py-8 mt-auto bg-neutral-950 text-neutral-500 text-xs text-center px-4">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="font-light">
-            Fotografia Unalmed • Universidad Nacional de Colombia Sede Medellín • Espacio fotográfico libre para la comunidad
-          </p>
-
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-end gap-4">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setActiveTab('dynamics')}

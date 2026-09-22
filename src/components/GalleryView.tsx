@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { usePhotos } from '../context/PhotoContext';
-import { Photo } from '../types';
 
 interface GalleryViewProps {
   onGoToUpload?: () => void;
@@ -8,63 +7,42 @@ interface GalleryViewProps {
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onGoToUpload }) => {
   const { photos, openPhotoModal } = usePhotos();
-  const [selectedLocation, setSelectedLocation] = useState<string>('Todos');
-
-  const locations = ['Todos', 'El Volador', 'Robledo', 'Arquitectura', 'Jardines', 'Minas'];
-
-  const filteredPhotos = photos.filter((p: Photo) => {
-    if (selectedLocation === 'Todos') return true;
-    return (
-      p.location.toLowerCase().includes(selectedLocation.toLowerCase()) ||
-      p.title.toLowerCase().includes(selectedLocation.toLowerCase()) ||
-      p.description.toLowerCase().includes(selectedLocation.toLowerCase())
-    );
-  });
 
   return (
     <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-20">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6 mb-8">
         <div>
           <span className="text-xs uppercase tracking-widest text-neutral-400 font-semibold block mb-1">
-            Archivo Visual
+            Galería Fotográfica
           </span>
           <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-            Comunidad Fotográfica Unalmed
+            Fotografia Unalmed
           </h1>
           <p className="text-sm text-neutral-400 font-light mt-1">
-            Explora las perspectivas, rincones y momentos capturados en nuestra sede por los usuarios.
+            Catálogo fotográfico oficial de la comunidad Unalmed.
           </p>
         </div>
 
-        {/* Location filters (NO ICONS, NO BORDERS) */}
-        {photos.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 p-1.5 bg-neutral-900 rounded-full">
-            {locations.map((loc) => (
-              <button
-                key={loc}
-                onClick={() => setSelectedLocation(loc)}
-                className={`px-4 py-2 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-                  selectedLocation === loc
-                    ? 'bg-white text-neutral-950 shadow-sm'
-                    : 'text-neutral-400 hover:text-white'
-                }`}
-              >
-                {loc}
-              </button>
-            ))}
-          </div>
+        {photos.length > 0 && onGoToUpload && (
+          <button
+            type="button"
+            onClick={onGoToUpload}
+            className="px-5 py-2.5 rounded-full bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-xs transition cursor-pointer"
+          >
+            Subir Fotografía
+          </button>
         )}
       </div>
 
       {/* Visual Photography Grid */}
-      {filteredPhotos.length === 0 ? (
+      {photos.length === 0 ? (
         <div className="py-24 text-center bg-neutral-900/50 rounded-3xl p-8 max-w-lg mx-auto">
           <h3 className="text-xl font-bold text-white mb-2">
-            No hay fotografías en la galería
+            No hay fotografías registradas aún
           </h3>
           <p className="text-neutral-400 text-sm font-light mb-6">
-            Las fotografías de referencia han sido removidas. Sube tus tomas para inaugurar la galería de Unalmed.
+            Sube tus fotografías o sincronízalas desde el panel de administración para verlas aquí.
           </p>
           {onGoToUpload && (
             <button
@@ -77,7 +55,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onGoToUpload }) => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredPhotos.map((photo) => (
+          {photos.map((photo) => (
             <div
               key={photo.id}
               onClick={() => openPhotoModal(photo)}
@@ -113,9 +91,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onGoToUpload }) => {
 
               {/* Info text */}
               <div className="relative z-10 p-6 flex flex-col gap-1.5">
-                <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold block">
-                  {photo.location}
-                </span>
                 <h3 className="text-xl font-bold text-white tracking-tight leading-snug">
                   {photo.title}
                 </h3>

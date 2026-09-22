@@ -8,7 +8,7 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
-  const { totalVotesCount, photos, isAdmin, adminVoteMode, dynamics, cloudStatus } = usePhotos();
+  const { totalVotesCount, photos, isAdmin, adminVoteMode, dynamics } = usePhotos();
 
   return (
     <header className="sticky top-0 z-30 w-full bg-neutral-950/90 backdrop-blur-md">
@@ -19,34 +19,13 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
             onClick={() => setActiveTab('vote')}
             className="text-left group cursor-pointer"
           >
-            <span className="block text-xs uppercase tracking-widest text-neutral-400 font-medium">
-              Universidad Nacional Sede Medellín
-            </span>
             <span className="block text-2xl font-bold tracking-tight text-white group-hover:text-neutral-200 transition-colors">
               Fotografia Unalmed
             </span>
           </button>
-          <div className="hidden md:flex items-center gap-2">
-            <span className="px-3 py-1 text-xs rounded-full bg-neutral-900 text-neutral-300 font-medium">
-              {totalVotesCount} votos registrados
-            </span>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-neutral-900/90 text-neutral-400">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  cloudStatus === 'connected'
-                    ? 'bg-emerald-400 animate-pulse'
-                    : cloudStatus === 'permission_error'
-                    ? 'bg-amber-400'
-                    : 'bg-neutral-500'
-                }`}
-              />
-              {cloudStatus === 'connected'
-                ? 'Nube Firebase'
-                : cloudStatus === 'permission_error'
-                ? 'Reglas Firebase'
-                : 'Conectando'}
-            </span>
-          </div>
+          <span className="hidden md:inline-block px-3 py-1 text-xs rounded-full bg-neutral-900 text-neutral-300 font-medium">
+            {totalVotesCount} votos registrados
+          </span>
         </div>
 
         {/* Minimalist Navigation Tabs (NO ICONS, NO BORDERS) */}

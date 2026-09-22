@@ -3,7 +3,7 @@ import { DriveFolderInfo, DriveUploadResult } from '../types';
 const DRIVE_API_URL = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3';
 
-export const FOLDER_NAME_DEFAULT = 'Fotografia Unalmed - Fotos del Campus';
+export const FOLDER_NAME_DEFAULT = 'Fotografia Unalmed';
 
 /**
  * Searches for an existing public folder or creates a new one in the user's personal Google Drive.
@@ -30,6 +30,7 @@ export async function getOrCreatePublicDriveFolder(
   const searchData = await searchRes.json();
   let folderId = searchData.files?.[0]?.id;
   let webViewLink = searchData.files?.[0]?.webViewLink;
+  let actualFolderName = searchData.files?.[0]?.name || folderName;
 
   if (!folderId) {
     // Create the folder
@@ -54,6 +55,7 @@ export async function getOrCreatePublicDriveFolder(
     const created = await createRes.json();
     folderId = created.id;
     webViewLink = created.webViewLink;
+    actualFolderName = created.name || folderName;
   }
 
   // Ensure public permissions ("anyone with the link can view")
@@ -76,7 +78,7 @@ export async function getOrCreatePublicDriveFolder(
 
   return {
     folderId,
-    folderName,
+    folderName: actualFolderName,
     webViewLink,
     isPublic: true,
   };
@@ -191,3 +193,76 @@ export async function uploadPhotoToDrive(
 export function getDriveImagePublicUrl(fileId: string): string {
   return `https://lh3.googleusercontent.com/d/${fileId}=s1600`;
 }
+
+/**
+ * Fetches image files directly from a public Google Drive folder.
+ * Can be called with an API key (for anonymous public visitors) or with an OAuth accessToken.
+ */
+export async function fetchPublicFolderFiles(
+  folderId: string,
+  apiKey?: string,
+  accessToken?: string
+): Promise<DriveUploadResult[]> {
+  let url = `${DRIVE_API_URL}/files?q='${folderId}'+in+parents+and+trashed=false+and+mimeType+contains+'image/'&fields=files(id,name,webViewLink,thumbnailLink,description,createdTime)&pageSize=100`;
+  if (apiKey) {
+    url += `&key=${encodeURIComponent(apiKey)}`;
+  }
+
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Error leyendo archivos de la carpeta pública de Drive: ${errText}`);
+  }
+
+  const data = await res.json();
+  const files: Array<{ id: string; name: string; webViewLink?: string; description?: string }> =
+    data.files || [];
+
+  return files.map((f) => ({
+    fileId: f.id,
+    fileName: f.name,
+    viewUrl: `https://drive.google.com/uc?export=view&id=${f.id}`,
+    directImageUrl: `https://lh3.googleusercontent.com/d/${f.id}=s1600`,
+    webViewLink: f.webViewLink,
+  }));
+}
+
+/**
+ * Fetches the metadata (including real current name and webViewLink) of a Google Drive folder by its ID.
+ */
+export async function fetchDriveFolderDetails(
+  folderId: string,
+  apiKey?: string,
+  accessToken?: string
+): Promise<{ id: string; name: string; webViewLink?: string } | null> {
+  if (!folderId) return null;
+  let url = `${DRIVE_API_URL}/files/${folderId}?fields=id,name,webViewLink,trashed`;
+  if (apiKey) {
+    url += `&key=${encodeURIComponent(apiKey)}`;
+  }
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  try {
+    const res = await fetch(url, { headers });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.trashed) return null;
+    return {
+      id: data.id,
+      name: data.name || FOLDER_NAME_DEFAULT,
+      webViewLink: data.webViewLink,
+    };
+  } catch {
+    return null;
+  }
+}
+
+

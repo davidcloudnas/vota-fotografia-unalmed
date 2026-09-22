@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { User } from 'firebase/auth';
 import {
   Photo,
   CommentItem,
@@ -7,19 +6,31 @@ import {
   DynamicSession,
   PhotoSnapshot,
   DriveFolderInfo,
+  GoogleAdminUser,
 } from '../types';
 import { INITIAL_PHOTOS } from '../data/initialPhotos';
 import {
-  initAuth,
-  googleSignIn,
-  logoutGoogle,
+  requestGoogleDriveToken,
   getAccessToken,
-} from '../services/auth';
+  setManualAccessToken,
+  clearGoogleAuth,
+} from '../services/googleAuth';
 import {
   getOrCreatePublicDriveFolder,
   uploadPhotoToDrive,
+  fetchPublicFolderFiles,
+  fetchDriveFolderDetails,
   FOLDER_NAME_DEFAULT,
 } from '../services/driveService';
+import { APP_CONFIG } from '../config';
+import {
+  fetchRemoteSharedState,
+  pushRemoteSharedState,
+  sendBeaconSharedState,
+  mergeAppState,
+  isSharedStoreConfigured,
+  getActiveSyncProviderName,
+} from '../services/sharedStore';
 
 interface PhotoContextType {
   photos: Photo[];
@@ -46,6 +57,14 @@ interface PhotoContextType {
   resetAllData: () => void;
   deletePhoto: (photoId: string) => void;
 
+  // Realtime Global Synchronization (Multi-user)
+  isSyncConfigured: boolean;
+  syncProviderName: string;
+  isSyncingGlobalVotes: boolean;
+  lastGlobalSyncTime: number | null;
+  syncGlobalVotes: () => Promise<boolean>;
+  publishCurrentStateToGlobal: () => Promise<boolean>;
+
   // Admin configuration
   isAdmin: boolean;
   loginAdmin: (password: string) => boolean;
@@ -62,15 +81,19 @@ interface PhotoContextType {
   finishCurrentDynamic: () => void;
   deleteDynamic: (dynamicId: string) => void;
 
-  // Google Drive Personal Integration (Admin account)
-  googleUser: User | null;
+  // Google Drive Integration (Admin account)
+  googleUser: GoogleAdminUser | null;
   driveFolder: DriveFolderInfo | null;
   isConnectingDrive: boolean;
   isUploadingToDrive: boolean;
   connectGoogleDrive: () => Promise<DriveFolderInfo | null>;
-  disconnectGoogleDrive: () => Promise<void>;
+  disconnectGoogleDrive: () => void;
   setManualDriveFolder: (folderIdOrUrl: string) => void;
+  setManualToken: (token: string) => void;
   syncPhotosToDrive: () => Promise<{ success: number; failed: number }>;
+  loadPhotosFromDrive: (folderId?: string) => Promise<number>;
+  refreshDriveFolderMetadata: (folderId?: string) => Promise<void>;
+  importPhotosFromJson: (jsonData: string) => boolean;
   uploadFileToDriveFolder: (file: File | Blob, fileName: string) => Promise<{
     fileId: string;
     directImageUrl: string;
@@ -156,7 +179,13 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const saved = localStorage.getItem(DYNAMICS_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter(
+            (d) =>
+              d.title !== 'Dinámica de Apertura: Miradas de Unalmed' &&
+              !d.id?.startsWith('dynamic-init-')
+          );
+        }
       }
     } catch {
       // fallback
@@ -169,24 +198,21 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const saved = localStorage.getItem(ACTIVE_DYNAMIC_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') return parsed;
+        if (parsed && typeof parsed === 'object') {
+          if (
+            parsed.title === 'Dinámica de Apertura: Miradas de Unalmed' ||
+            parsed.id?.startsWith('dynamic-init-')
+          ) {
+            localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
+            return null;
+          }
+          return parsed;
+        }
       }
     } catch {
       // fallback
     }
-    const defaultDynamic: DynamicSession = {
-      id: 'dynamic-init-' + Date.now(),
-      title: 'Dinámica de Apertura: Miradas de Unalmed',
-      description: 'Primera dinámica fotográfica para elegir las fotos más icónicas del campus.',
-      startedAt: Date.now(),
-      durationHours: 0,
-      closedAt: null,
-      isClosed: false,
-      totalVotesAtClose: 0,
-      top3: [],
-      allRankedPhotos: [],
-    };
-    return defaultDynamic;
+    return null;
   });
 
   const [activeDuel, setActiveDuel] = useState<[Photo, Photo] | null>(() => {
@@ -197,7 +223,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
 
   // Google Drive state
-  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleAdminUser | null>(null);
   const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
   const [isUploadingToDrive, setIsUploadingToDrive] = useState<boolean>(false);
   const [driveFolder, setDriveFolder] = useState<DriveFolderInfo | null>(() => {
@@ -207,8 +233,24 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } catch {
       // fallback
     }
+    if (APP_CONFIG.defaultDriveFolderId) {
+      return {
+        folderId: APP_CONFIG.defaultDriveFolderId,
+        folderName: 'Fotografia Unalmed',
+        webViewLink: `https://drive.google.com/drive/folders/${APP_CONFIG.defaultDriveFolderId}`,
+        isPublic: true,
+      };
+    }
     return null;
   });
+
+  // Global multi-user sync state
+  const [isSyncingGlobalVotes, setIsSyncingGlobalVotes] = useState(false);
+  const [lastGlobalSyncTime, setLastGlobalSyncTime] = useState<number | null>(null);
+  const isSyncConfigured = isSharedStoreConfigured();
+  const syncProviderName = getActiveSyncProviderName();
+  const syncTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isUserActionRef = React.useRef<boolean>(false);
 
   // Sync to local storage
   useEffect(() => {
@@ -279,27 +321,14 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [driveFolder]);
 
-  // Initialize auth state
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (user, _token) => {
-        setGoogleUser(user);
-      },
-      () => {
-        setGoogleUser(null);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
   // Connect Google Drive function (Admin)
   const connectGoogleDrive = async (): Promise<DriveFolderInfo | null> => {
     setIsConnectingDrive(true);
     try {
-      const authResult = await googleSignIn();
-      if (!authResult) throw new Error('No se completó la autenticación con Google.');
+      const authResult = await requestGoogleDriveToken();
+      if (!authResult?.accessToken) throw new Error('No se completó la autenticación con Google.');
 
-      setGoogleUser(authResult.user);
+      setGoogleUser(authResult.user || { email: 'Cuenta de Administrador Google' });
       // Create or locate the public folder in the admin's personal drive
       const folder = await getOrCreatePublicDriveFolder(
         authResult.accessToken,
@@ -315,22 +344,82 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const disconnectGoogleDrive = async () => {
-    await logoutGoogle();
+  const disconnectGoogleDrive = () => {
+    clearGoogleAuth();
     setGoogleUser(null);
   };
 
-  const setManualDriveFolder = (input: string) => {
+  const setManualToken = (token: string) => {
+    if (!token.trim()) return;
+    setManualAccessToken(token.trim());
+    setGoogleUser({ email: 'Token de Google configurado' });
+  };
+
+  const refreshDriveFolderMetadata = useCallback(
+    async (folderIdToQuery?: string) => {
+      const targetId = folderIdToQuery || driveFolder?.folderId || APP_CONFIG.defaultDriveFolderId;
+      if (!targetId) return;
+
+      try {
+        const token = await getAccessToken();
+        const details = await fetchDriveFolderDetails(
+          targetId,
+          APP_CONFIG.googleApiKey || undefined,
+          token || undefined
+        );
+        if (details && details.name) {
+          setDriveFolder((prev) => {
+            if (!prev) {
+              return {
+                folderId: details.id,
+                folderName: details.name,
+                webViewLink:
+                  details.webViewLink || `https://drive.google.com/drive/folders/${details.id}`,
+                isPublic: true,
+              };
+            }
+            if (
+              prev.folderName !== details.name ||
+              (details.webViewLink && prev.webViewLink !== details.webViewLink)
+            ) {
+              return {
+                ...prev,
+                folderName: details.name,
+                webViewLink: details.webViewLink || prev.webViewLink,
+              };
+            }
+            return prev;
+          });
+        }
+      } catch (err) {
+        console.warn('No se pudo refrescar los metadatos de la carpeta de Drive:', err);
+      }
+    },
+    [driveFolder?.folderId]
+  );
+
+  // Sync folder name metadata on startup
+  useEffect(() => {
+    refreshDriveFolderMetadata();
+  }, [refreshDriveFolderMetadata]);
+
+  const setManualDriveFolder = async (input: string) => {
     if (!input.trim()) return;
     let folderId = input.trim();
     const match = folderId.match(/folders\/([a-zA-Z0-9_-]+)/);
     if (match) {
       folderId = match[1];
     }
+    const token = await getAccessToken();
+    const details = await fetchDriveFolderDetails(
+      folderId,
+      APP_CONFIG.googleApiKey || undefined,
+      token || undefined
+    );
     const folderInfo: DriveFolderInfo = {
       folderId,
-      folderName: 'Fotografia Unalmed - Fotos del Campus (Vinculada)',
-      webViewLink: `https://drive.google.com/drive/folders/${folderId}`,
+      folderName: details?.name || 'Fotografia Unalmed',
+      webViewLink: details?.webViewLink || `https://drive.google.com/drive/folders/${folderId}`,
       isPublic: true,
     };
     setDriveFolder(folderInfo);
@@ -384,6 +473,79 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { success: successCount, failed: failedCount };
   };
 
+  // Load photos directly from the public Google Drive folder
+  const loadPhotosFromDrive = async (folderId?: string): Promise<number> => {
+    const targetFolderId = folderId || driveFolder?.folderId || APP_CONFIG.defaultDriveFolderId;
+    if (!targetFolderId) {
+      throw new Error('No hay carpeta de Google Drive configurada.');
+    }
+
+    // Refresh folder name and metadata dynamically from Drive
+    refreshDriveFolderMetadata(targetFolderId);
+
+    const token = await getAccessToken();
+    const driveFiles = await fetchPublicFolderFiles(
+      targetFolderId,
+      APP_CONFIG.googleApiKey || undefined,
+      token || undefined
+    );
+
+    if (!driveFiles || driveFiles.length === 0) {
+      return 0;
+    }
+
+    let addedCount = 0;
+    setPhotos((prev) => {
+      const existingIds = new Set(prev.map((p) => p.driveFileId).filter(Boolean));
+      const newItems: Photo[] = [];
+
+      driveFiles.forEach((df, idx) => {
+        if (!existingIds.has(df.fileId)) {
+          newItems.push({
+            id: 'drive-' + df.fileId,
+            title: df.fileName.replace(/\.[^/.]+$/, '').replace(/_/g, ' '),
+            author: 'Comunidad Unalmed',
+            location: 'Campus El Volador',
+            imageUrl: df.directImageUrl,
+            driveFileId: df.fileId,
+            driveWebViewLink: df.webViewLink,
+            syncedToDrive: true,
+            description: 'Fotografía sincronizada desde la carpeta pública de Google Drive.',
+            points: 1200 + (driveFiles.length - idx) * 3,
+            matchesPlayed: 0,
+            matchesWon: 0,
+            swipeLikes: 0,
+            swipePasses: 0,
+            comments: [],
+            isFavorite: false,
+            createdAt: new Date().toISOString(),
+          });
+          addedCount++;
+        }
+      });
+
+      if (newItems.length === 0) return prev;
+      isUserActionRef.current = true;
+      return [...prev, ...newItems];
+    });
+
+    return addedCount;
+  };
+
+  // Import photos from JSON string
+  const importPhotosFromJson = (jsonData: string): boolean => {
+    try {
+      const parsed = JSON.parse(jsonData);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        setPhotos(parsed);
+        return true;
+      }
+    } catch (err) {
+      console.error('Error importando catálogo JSON:', err);
+    }
+    return false;
+  };
+
   // Upload file to Drive folder: ONLY uploads if token is present; does NOT prompt popup for students!
   const uploadFileToDriveFolder = async (
     file: File | Blob,
@@ -413,12 +575,163 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  // Keep active duel updated if photos change
+  const syncGlobalVotes = useCallback(async (): Promise<boolean> => {
+    setIsSyncingGlobalVotes(true);
+    try {
+      const remote = await fetchRemoteSharedState();
+      if (remote) {
+        setPhotos((prev) => {
+          const currentLocal = latestStateRef.current;
+          const merged = mergeAppState(
+            {
+              photos: prev,
+              totalVotesCount: currentLocal.totalVotesCount,
+              activeDynamic: currentLocal.activeDynamic,
+              dynamics: currentLocal.dynamics,
+            },
+            remote
+          );
+          if (merged.hasChanges) {
+            setTotalVotesCount(merged.totalVotesCount);
+            if (merged.activeDynamic) setActiveDynamic(merged.activeDynamic);
+            if (merged.dynamics) setDynamics(merged.dynamics);
+            return merged.photos;
+          }
+          return prev;
+        });
+        setLastGlobalSyncTime(Date.now());
+        return true;
+      }
+    } catch (err) {
+      console.warn('Error sincronizando votos globales:', err);
+    } finally {
+      setIsSyncingGlobalVotes(false);
+    }
+    return false;
+  }, []);
+
+  const publishCurrentStateToGlobal = useCallback(async (): Promise<boolean> => {
+    setIsSyncingGlobalVotes(true);
+    try {
+      const ok = await pushRemoteSharedState({
+        version: 1,
+        updatedAt: Date.now(),
+        totalVotesCount,
+        photos,
+        activeDynamic,
+        dynamics,
+      });
+      if (ok) {
+        setLastGlobalSyncTime(Date.now());
+      }
+      return ok;
+    } catch (err) {
+      console.error('Error publicando estado global:', err);
+      return false;
+    } finally {
+      setIsSyncingGlobalVotes(false);
+    }
+  }, [totalVotesCount, photos, activeDynamic, dynamics]);
+
+  // Keep ref to latest state for unload/refresh protection
+  const latestStateRef = React.useRef({
+    photos,
+    totalVotesCount,
+    activeDynamic,
+    dynamics,
+  });
+  latestStateRef.current = { photos, totalVotesCount, activeDynamic, dynamics };
+  const hasPendingPushRef = React.useRef(false);
+
+  // Initial pull on enter and periodic background polling (every 8 seconds)
+  // Allows new votes and photos from other students to appear without page reload
   useEffect(() => {
-    if ((!activeDuel || !photos.find(p => p.id === activeDuel[0]?.id) || !photos.find(p => p.id === activeDuel[1]?.id)) && photos.length >= 2) {
+    syncGlobalVotes();
+    const interval = setInterval(() => {
+      syncGlobalVotes();
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [syncGlobalVotes]);
+
+  // Push to remote store when user votes, with fast 350ms debounce
+  useEffect(() => {
+    if (!isUserActionRef.current) return;
+    isUserActionRef.current = false;
+    hasPendingPushRef.current = true;
+
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(async () => {
+      try {
+        await pushRemoteSharedState({
+          version: 1,
+          updatedAt: Date.now(),
+          totalVotesCount: latestStateRef.current.totalVotesCount,
+          photos: latestStateRef.current.photos,
+          activeDynamic: latestStateRef.current.activeDynamic,
+          dynamics: latestStateRef.current.dynamics,
+        });
+        hasPendingPushRef.current = false;
+        setLastGlobalSyncTime(Date.now());
+      } catch (err) {
+        console.warn('Error guardando votos compartidos:', err);
+      }
+    }, 350);
+  }, [photos, totalVotesCount, activeDynamic, dynamics]);
+
+  // Prevent losing votes if user refreshes or closes the page immediately after voting
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (hasPendingPushRef.current) {
+        sendBeaconSharedState({
+          version: 1,
+          updatedAt: Date.now(),
+          totalVotesCount: latestStateRef.current.totalVotesCount,
+          photos: latestStateRef.current.photos,
+          activeDynamic: latestStateRef.current.activeDynamic,
+          dynamics: latestStateRef.current.dynamics,
+        });
+        hasPendingPushRef.current = false;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && hasPendingPushRef.current) {
+        sendBeaconSharedState({
+          version: 1,
+          updatedAt: Date.now(),
+          totalVotesCount: latestStateRef.current.totalVotesCount,
+          photos: latestStateRef.current.photos,
+          activeDynamic: latestStateRef.current.activeDynamic,
+          dynamics: latestStateRef.current.dynamics,
+        });
+        hasPendingPushRef.current = false;
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // Keep active duel updated if photos change, without interrupting an ongoing duel
+  useEffect(() => {
+    if (!activeDuel && photos.length >= 2) {
       setActiveDuel(getRandomPair(photos));
-    } else if (photos.length < 2) {
-      setActiveDuel(null);
+    } else if (activeDuel) {
+      const p0 = photos.find((p) => p.id === activeDuel[0]?.id);
+      const p1 = photos.find((p) => p.id === activeDuel[1]?.id);
+      if (!p0 || !p1) {
+        setActiveDuel(photos.length >= 2 ? getRandomPair(photos) : null);
+      } else if (p0 !== activeDuel[0] || p1 !== activeDuel[1]) {
+        // Update photo stats seamlessly in place
+        setActiveDuel([p0, p1]);
+      }
     }
   }, [photos]);
 
@@ -458,7 +771,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const loginAdmin = (password: string): boolean => {
-    if (password.trim() === ADMIN_PASSWORD_DEFAULT || password.trim() === 'admin' || password.trim() === '1234') {
+    if (password.trim() === ADMIN_PASSWORD_DEFAULT) {
       setIsAdmin(true);
       return true;
     }
@@ -477,6 +790,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const voteDuel = (winnerId: string, loserId: string) => {
     if (!isVotingOpen) return;
+    isUserActionRef.current = true;
 
     setPhotos((prev) => {
       const winner = prev.find((p) => p.id === winnerId);
@@ -516,6 +830,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const voteSwipe = (photoId: string, liked: boolean) => {
     if (!isVotingOpen) return;
+    isUserActionRef.current = true;
 
     setPhotos((prev) =>
       prev.map((p) => {
@@ -546,6 +861,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const addComment = (photoId: string, author: string, text: string) => {
     if (!text.trim()) return;
+    isUserActionRef.current = true;
     const newComment: CommentItem = {
       id: 'c-' + Date.now(),
       author: author.trim() || 'Estudiante Unal',
@@ -566,6 +882,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const likeComment = (photoId: string, commentId: string) => {
+    isUserActionRef.current = true;
     setPhotos((prev) =>
       prev.map((p) => {
         if (p.id !== photoId) return p;
@@ -588,11 +905,12 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     driveFileId?: string;
     driveWebViewLink?: string;
   }) => {
+    isUserActionRef.current = true;
     const newPhoto: Photo = {
       id: 'unal-user-' + Date.now(),
       title: newPhotoData.title.trim() || 'Fotografía Sin Título',
       author: newPhotoData.author.trim() || 'Comunidad Unalmed',
-      location: newPhotoData.location.trim() || 'Campus El Volador',
+      location: newPhotoData.location.trim() || 'Medellín',
       imageUrl: newPhotoData.imageUrl,
       driveFileId: newPhotoData.driveFileId,
       driveWebViewLink: newPhotoData.driveWebViewLink,
@@ -611,6 +929,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const deletePhoto = (photoId: string) => {
+    isUserActionRef.current = true;
     setPhotos((prev) => prev.filter((p) => p.id !== photoId));
     if (selectedPhotoId === photoId) {
       setSelectedPhotoId(null);
@@ -628,6 +947,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Close current dynamic and save final results & Top 3 snapshot
   const finishCurrentDynamic = useCallback(() => {
     if (!activeDynamic || activeDynamic.isClosed) return;
+    isUserActionRef.current = true;
 
     const rankedSnapshots: PhotoSnapshot[] = [...photos]
       .sort((a, b) => b.points - a.points)
@@ -669,6 +989,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (activeDynamic && !activeDynamic.isClosed) {
       finishCurrentDynamic();
     }
+    isUserActionRef.current = true;
 
     setPhotos((prev) =>
       prev.map((p) => ({
@@ -700,6 +1021,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const deleteDynamic = (dynamicId: string) => {
+    isUserActionRef.current = true;
     setDynamics((prev) => prev.filter((d) => d.id !== dynamicId));
     if (activeDynamic?.id === dynamicId) {
       setActiveDynamic(null);
@@ -740,6 +1062,12 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         closePhotoModal,
         resetAllData,
         deletePhoto,
+        isSyncConfigured,
+        syncProviderName,
+        isSyncingGlobalVotes,
+        lastGlobalSyncTime,
+        syncGlobalVotes,
+        publishCurrentStateToGlobal,
         isAdmin,
         loginAdmin,
         logoutAdmin,
@@ -759,7 +1087,11 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         connectGoogleDrive,
         disconnectGoogleDrive,
         setManualDriveFolder,
+        setManualToken,
         syncPhotosToDrive,
+        loadPhotosFromDrive,
+        refreshDriveFolderMetadata,
+        importPhotosFromJson,
         uploadFileToDriveFolder,
       }}
     >

@@ -108,7 +108,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
           driveWebViewLink = driveUploaded.webViewLink;
           finalImageUrl = driveUploaded.directImageUrl;
           syncedToDrive = true;
-          setUploadStatusMsg('¡Fotografía alojada en la carpeta pública de Google Drive del campus!');
+          setUploadStatusMsg('¡Fotografía alojada en la carpeta pública de Google Drive!');
         }
       }
     } catch (err) {
@@ -118,8 +118,8 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
     // Save photo to community database
     uploadPhoto({
       title,
-      author: author.trim() || 'Estudiante Unalmed',
-      location: location.trim() || 'Campus El Volador',
+      author: author.trim() || 'Comunidad Unalmed',
+      location: location.trim() || 'Medellín',
       imageUrl: finalImageUrl,
       description,
       driveFileId,
@@ -148,10 +148,10 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
           )}
         </div>
         <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-          Subir Fotografía del Campus
+          Subir Fotografía
         </h1>
         <p className="text-sm text-neutral-400 font-light mt-1">
-          Comparte tu mirada de la vida universitaria, arquitectura, fauna o atardeceres. Tu foto participará de inmediato en las votaciones y duelos de la comunidad.
+          Comparte tu fotografía. Tu foto participará de inmediato en las votaciones, dinámicas y duelos de la comunidad.
         </p>
       </div>
 
@@ -270,13 +270,13 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
 
           <div className="sm:col-span-2">
             <label className="block text-sm font-semibold text-neutral-200 mb-2">
-              Ubicación o Rincón del Campus
+              Lugar o Ubicación
             </label>
             <input
               type="text"
               value={location}
               onChange={(e) => setLocation(e.target.value)}
-              placeholder="Ej. Campus El Volador, Facultad de Minas Robledo, Los Bloques..."
+              placeholder="Lugar o rincón donde fue tomada..."
               className="w-full px-4 py-3 rounded-2xl bg-neutral-900 text-sm text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-amber-400 transition"
             />
           </div>

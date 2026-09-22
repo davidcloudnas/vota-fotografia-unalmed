@@ -1,3 +1,9 @@
+export interface GoogleAdminUser {
+  email?: string;
+  name?: string;
+  picture?: string;
+}
+
 export interface CommentItem {
   id: string;
   author: string;

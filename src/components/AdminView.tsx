@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { usePhotos } from '../context/PhotoContext';
 import { AdminVoteModeSetting } from '../types';
 
@@ -29,13 +29,24 @@ export const AdminView: React.FC<AdminViewProps> = ({
     finishCurrentDynamic,
     dynamics,
     deleteDynamic,
+    totalVotesCount,
     googleUser,
     driveFolder,
     isConnectingDrive,
     connectGoogleDrive,
     disconnectGoogleDrive,
     setManualDriveFolder,
+    setManualToken,
     syncPhotosToDrive,
+    loadPhotosFromDrive,
+    refreshDriveFolderMetadata,
+    importPhotosFromJson,
+    isSyncConfigured,
+    syncProviderName,
+    isSyncingGlobalVotes,
+    lastGlobalSyncTime,
+    syncGlobalVotes,
+    publishCurrentStateToGlobal,
   } = usePhotos();
 
   const [passwordInput, setPasswordInput] = useState('');
@@ -43,14 +54,24 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [successNotice, setSuccessNotice] = useState('');
   const [driveAuthError, setDriveAuthError] = useState('');
   const [manualFolderInput, setManualFolderInput] = useState('');
+  const [manualTokenInput, setManualTokenInput] = useState('');
   const [syncStatusMsg, setSyncStatusMsg] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isLoadingDrivePhotos, setIsLoadingDrivePhotos] = useState(false);
+  const [driveLoadStatus, setDriveLoadStatus] = useState('');
+  const [showJsonImport, setShowJsonImport] = useState(false);
+  const [jsonImportText, setJsonImportText] = useState('');
+  const [syncGlobalStatusMsg, setSyncGlobalStatusMsg] = useState('');
 
   // Form state for creating a new dynamic
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [durationMode, setDurationMode] = useState<'infinite' | 'custom'>('custom');
   const [customHours, setCustomHours] = useState('24');
+
+  useEffect(() => {
+    refreshDriveFolderMetadata();
+  }, [refreshDriveFolderMetadata]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,30 +136,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
   return (
     <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-20">
       <div className="mb-8">
-        <span className="text-xs uppercase tracking-widest text-neutral-400 font-semibold block mb-1">
-          Panel de Control
-        </span>
         <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
           Administración de Fotografia Unalmed
         </h1>
-        <p className="text-sm text-neutral-400 font-light mt-1">
-          Control de dinámicas por tiempo, selección de top 3, duración de votaciones y reglas de torneo.
-        </p>
       </div>
 
       {!isAdmin ? (
         /* Formulario de Login para Administrador */
         <div className="max-w-md mx-auto bg-neutral-900 rounded-3xl p-8 sm:p-10 shadow-2xl">
           <div className="text-center mb-6">
-            <span className="inline-block px-4 py-1.5 rounded-full bg-neutral-800 text-xs font-semibold text-amber-400 uppercase tracking-wider mb-3">
-              Área Restringida
-            </span>
             <h2 className="text-2xl font-bold text-white tracking-tight">
               Ingreso de Administrador
             </h2>
-            <p className="text-xs text-neutral-400 font-light mt-2">
-              Ingresa la contraseña para programar la duración de las votaciones en horas, abrir/cerrar dinámicas y fijar modos de torneo.
-            </p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
@@ -169,18 +178,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
               type="submit"
               className="w-full py-4 rounded-2xl bg-white hover:bg-neutral-200 text-neutral-950 font-bold text-sm transition-all active:scale-98 cursor-pointer shadow-lg text-center"
             >
-              Desbloquear opciones
+              Ingresar
             </button>
           </form>
-
-          <div className="mt-6 pt-6 text-center text-xs text-neutral-500 font-light space-y-2">
-            <p>
-              Clave de acceso sugerida: <code className="text-neutral-300">unalmed2026</code> o <code className="text-neutral-300">admin</code>
-            </p>
-            <p>
-              Los estudiantes pueden participar en las votaciones y subir fotos libremente sin requerir contraseña.
-            </p>
-          </div>
         </div>
       ) : (
         /* Panel de opciones desbloqueadas para el Administrador */
@@ -218,13 +218,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold block mb-1">
-                  Cuenta de Administrador • Google Drive
+                  Google Drive • Repositorio
                 </span>
                 <h2 className="text-2xl font-bold text-white tracking-tight">
-                  Carpeta Pública Oficial del Campus
+                  Carpeta Google Drive ({driveFolder?.folderName || 'Fotografia Unalmed'})
                 </h2>
                 <p className="text-xs text-neutral-400 font-light mt-0.5 max-w-2xl">
-                  Las fotos de los estudiantes se archivan en tu carpeta de Google Drive como administrador. Los estudiantes no necesitan conectar ninguna cuenta ni crear carpetas.
+                  Las fotos de la comunidad se archivan en tu carpeta de Google Drive como administrador. Los estudiantes no necesitan conectar ninguna cuenta.
                 </p>
               </div>
 
@@ -284,7 +284,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <p className="font-semibold">Aviso de conexión con Google:</p>
                 <p>{driveAuthError}</p>
                 <p className="text-[11px] text-neutral-400 mt-1">
-                  Nota: Si tu navegador bloquea la ventana emergente de Google dentro de esta vista previa, abre la aplicación en una pestaña nueva con el botón en la esquina superior de AI Studio.
+                  Nota: Si tu navegador bloquea la ventana emergente de Google, permite las ventanas emergentes en tu navegador o abre la aplicación en una pestaña nueva.
                 </p>
               </div>
             )}
@@ -393,229 +393,349 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* O ingresar directamente un token de acceso OAuth */}
+              <div className="pt-3 border-t border-neutral-900 space-y-2">
+                <span className="text-xs font-semibold text-neutral-300 block">
+                  O ingresa un Token de Acceso de Google directamente:
+                </span>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="password"
+                    value={manualTokenInput}
+                    onChange={(e) => setManualTokenInput(e.target.value)}
+                    placeholder="Pega un token de acceso OAuth de Google Drive"
+                    className="flex-1 px-4 py-2 rounded-xl bg-neutral-900 text-xs text-white placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (manualTokenInput.trim()) {
+                        setManualToken(manualTokenInput.trim());
+                        setManualTokenInput('');
+                        alert('Token de Google configurado para sincronizar.');
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold transition"
+                  >
+                    Guardar Token
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* SECCIÓN 1: GESTIÓN DE DINÁMICA ACTIVA Y TIEMPO DE VOTACIÓN */}
-          <div className="p-6 sm:p-8 rounded-3xl bg-neutral-900 space-y-6">
+          {/* SECCIÓN MULTI-USUARIO: SINCRONIZACIÓN EN LA NUBE EN TIEMPO REAL */}
+          <div className="p-6 sm:p-8 rounded-3xl bg-neutral-900 space-y-6 border border-amber-400/20">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold block mb-1">
-                  Control de Dinámica y Temporizador
-                </span>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold block">
+                    Votación Compartida y Tiempo Real
+                  </span>
+                  <span
+                    className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${
+                      isSyncConfigured
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-amber-500/20 text-amber-400'
+                    }`}
+                  >
+                    {isSyncConfigured ? '🟢 Sincronización Global Activa' : '🟡 Modo Local'}
+                  </span>
+                </div>
                 <h2 className="text-2xl font-bold text-white tracking-tight">
-                  Dinámica Actual de Votación
+                  Sincronización de Votos y Fotografías
                 </h2>
-                <p className="text-xs text-neutral-400 font-light mt-0.5">
-                  Establece cuántas horas dura el torneo o finalízalo manualmente para calcular el podio Top 3.
+                <p className="text-xs text-neutral-400 font-light mt-0.5 max-w-2xl">
+                  Los votos, duelos, comentarios y nuevas fotografías se sincronizan automáticamente en tiempo real entre todos los usuarios y dispositivos.
                 </p>
               </div>
 
+              {/* Botones de acción rápida */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setDriveLoadStatus('');
+                    setIsLoadingDrivePhotos(true);
+                    try {
+                      const count = await loadPhotosFromDrive();
+                      setDriveLoadStatus(
+                        count > 0
+                          ? `¡Se cargaron ${count} fotos nuevas desde Google Drive y se sincronizaron con todos los usuarios!`
+                          : 'No se encontraron fotos nuevas o ya están todas sincronizadas.'
+                      );
+                    } catch (err: unknown) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      setDriveLoadStatus(`Aviso: ${msg}`);
+                    } finally {
+                      setIsLoadingDrivePhotos(false);
+                    }
+                  }}
+                  disabled={isLoadingDrivePhotos || !driveFolder}
+                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 text-xs font-semibold transition cursor-pointer"
+                >
+                  {isLoadingDrivePhotos ? 'Consultando Drive...' : '↻ Recargar fotos de Drive'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setSyncGlobalStatusMsg('');
+                    const ok = await syncGlobalVotes();
+                    setSyncGlobalStatusMsg(
+                      ok
+                        ? '✓ Votos y fotografías actualizados desde la nube.'
+                        : 'Comprobado: Todo sincronizado.'
+                    );
+                  }}
+                  disabled={isSyncingGlobalVotes}
+                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold transition cursor-pointer"
+                >
+                  {isSyncingGlobalVotes ? 'Comprobando...' : '↻ Sincronizar de la Nube'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setSyncGlobalStatusMsg('');
+                    const ok = await publishCurrentStateToGlobal();
+                    setSyncGlobalStatusMsg(
+                      ok
+                        ? '✓ ¡Votos, fotos y dinámicas publicados exitosamente a todos los usuarios!'
+                        : 'Aviso: No se pudo subir. Verifica la conexión.'
+                    );
+                  }}
+                  disabled={isSyncingGlobalVotes}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-xs transition cursor-pointer"
+                >
+                  ↑ Forzar Sincronización
+                </button>
+              </div>
+            </div>
+
+            {driveLoadStatus && (
+              <div className="p-3 rounded-xl bg-neutral-950 text-amber-400 text-xs font-medium">
+                {driveLoadStatus}
+              </div>
+            )}
+
+            {syncGlobalStatusMsg && (
+              <div className="p-3 rounded-xl bg-neutral-950 text-amber-400 text-xs font-medium">
+                {syncGlobalStatusMsg}
+              </div>
+            )}
+
+            {/* Métricas de estado global */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-2xl bg-neutral-950 text-xs">
+              <div>
+                <span className="text-neutral-400 block text-[11px]">Proveedor activo:</span>
+                <span className="text-white font-semibold">{syncProviderName}</span>
+              </div>
+              <div>
+                <span className="text-neutral-400 block text-[11px]">Fotos en catálogo:</span>
+                <span className="text-amber-400 font-bold">{photos.length} fotos</span>
+              </div>
+              <div>
+                <span className="text-neutral-400 block text-[11px]">Total de votos:</span>
+                <span className="text-amber-400 font-bold">{totalVotesCount}</span>
+              </div>
+              <div>
+                <span className="text-neutral-400 block text-[11px]">Última sincronización:</span>
+                <span className="text-neutral-300">
+                  {lastGlobalSyncTime ? new Date(lastGlobalSyncTime).toLocaleTimeString() : 'Automática'}
+                </span>
+              </div>
+            </div>
+
+            {/* Herramientas discretas de respaldo JSON */}
+            <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs border-t border-neutral-800/80">
+              <span className="text-neutral-400">Respaldo manual:</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const blob = new Blob([JSON.stringify(photos, null, 2)], {
+                      type: 'application/json',
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'fotografia-unalmed-respaldo.json';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-medium transition cursor-pointer"
+                >
+                  Descargar JSON ({photos.length} fotos)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowJsonImport(!showJsonImport)}
+                  className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-medium transition cursor-pointer"
+                >
+                  {showJsonImport ? 'Cerrar importador' : 'Importar JSON'}
+                </button>
+              </div>
+            </div>
+
+            {showJsonImport && (
+              <div className="p-4 rounded-2xl bg-neutral-950 space-y-3">
+                <p className="text-xs text-neutral-400">
+                  Pega aquí el contenido JSON para cargar fotos manualmente:
+                </p>
+                <textarea
+                  rows={4}
+                  value={jsonImportText}
+                  onChange={(e) => setJsonImportText(e.target.value)}
+                  placeholder="[{ id: ..., title: ..., imageUrl: ... }]"
+                  className="w-full p-3 rounded-xl bg-neutral-900 text-xs text-white font-mono placeholder-neutral-600 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const success = importPhotosFromJson(jsonImportText);
+                    if (success) {
+                      alert('¡Catálogo importado exitosamente!');
+                      setJsonImportText('');
+                      setShowJsonImport(false);
+                    } else {
+                      alert('El formato JSON no es válido. Debe ser un arreglo de fotografías.');
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-xs transition cursor-pointer"
+                >
+                  Confirmar Importación
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* SECCIÓN CREAR DINÁMICA */}
+          <div className="p-6 sm:p-8 rounded-3xl bg-neutral-900 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <h2 className="text-2xl font-bold text-white tracking-tight">
+                Crear Dinámica
+              </h2>
+
               {activeDynamic && !activeDynamic.isClosed && (
                 <button
+                  type="button"
                   onClick={handleCloseDynamicManually}
-                  className="px-4 py-2.5 rounded-full bg-rose-950/80 hover:bg-rose-900 text-rose-300 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
+                  className="px-4 py-2 rounded-full bg-rose-950/80 hover:bg-rose-900 text-rose-300 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
                 >
-                  Finalizar dinámica ahora
+                  Finalizar dinámica activa
                 </button>
               )}
             </div>
 
-            {/* Tarjeta de estado de la dinámica activa */}
-            {activeDynamic ? (
-              <div className="p-5 rounded-2xl bg-neutral-950 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-bold ${
-                        isVotingOpen
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-neutral-800 text-neutral-400'
-                      }`}
-                    >
-                      {isVotingOpen ? 'En Curso' : 'Cerrada'}
-                    </span>
-                    <h3 className="text-base font-bold text-white">
-                      {activeDynamic.title}
-                    </h3>
-                  </div>
-
-                  {isVotingOpen && (
-                    <span className="text-xs font-semibold text-amber-400">
-                      {activeDynamic.durationHours > 0
-                        ? `Tiempo restante: ${formatTimer(timeRemainingSeconds)}`
-                        : 'Duración: Sin límite de tiempo (Infinito)'}
-                    </span>
-                  )}
-                </div>
-
-                {activeDynamic.description && (
-                  <p className="text-xs text-neutral-300 font-light leading-relaxed">
-                    {activeDynamic.description}
-                  </p>
-                )}
-
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs text-neutral-400">
-                  <span>
-                    Duración configurada:{' '}
-                    <strong className="text-white">
-                      {activeDynamic.durationHours > 0
-                        ? `${activeDynamic.durationHours} horas`
-                        : 'Infinita (hasta cierre manual)'}
-                    </strong>
+            {activeDynamic && !activeDynamic.isClosed && (
+              <div className="p-4 rounded-2xl bg-neutral-950 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold text-[11px]">
+                    Activa
                   </span>
-
-                  <button
-                    onClick={onGoToDynamics}
-                    className="text-amber-400 hover:text-amber-300 font-semibold cursor-pointer"
-                  >
-                    Ver en pestaña Dinámicas →
-                  </button>
+                  <span className="font-bold text-white">{activeDynamic.title}</span>
                 </div>
-              </div>
-            ) : (
-              <div className="p-6 rounded-2xl bg-neutral-950 text-center text-xs text-neutral-400">
-                No hay ninguna dinámica activa en este momento. Crea una a continuación para abrir las votaciones.
+                <span className="text-amber-400 font-medium">
+                  {activeDynamic.durationHours > 0
+                    ? `Tiempo restante: ${formatTimer(timeRemainingSeconds)}`
+                    : 'Duración: Indefinida'}
+                </span>
               </div>
             )}
 
-            {/* Formulario para iniciar nueva dinámica con nuevo título y tiempo */}
-            <div className="pt-4">
-              <h3 className="text-lg font-bold text-white mb-2">
-                Iniciar Nueva Dinámica
-              </h3>
-              <p className="text-xs text-neutral-400 font-light mb-4">
-                Al iniciar una nueva dinámica, la anterior se cerrará automáticamente, archivando su Top 3 en la sección "Dinámicas", y se abrirá una nueva ronda de votación para las fotos.
-              </p>
+            <form onSubmit={handleStartDynamic} className="space-y-4">
+              <div>
+                <input
+                  type="text"
+                  required
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="Título de la dinámica"
+                  className="w-full px-4 py-3 rounded-2xl bg-neutral-950 text-white text-xs placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                />
+              </div>
 
-              <form onSubmit={handleStartDynamic} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-1.5">
-                    Título de la nueva dinámica *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                    placeholder="Ej. Torneo de Atardeceres Unalmed, Rincones Ocultos de Minas, etc."
-                    className="w-full px-4 py-3 rounded-2xl bg-neutral-950 text-white text-xs placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-1.5">
-                    Descripción o temática (opcional)
-                  </label>
-                  <input
-                    type="text"
-                    value={newDescription}
-                    onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder="Describe el enfoque o invitación a la comunidad..."
-                    className="w-full px-4 py-3 rounded-2xl bg-neutral-950 text-white text-xs placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
-                  />
-                </div>
-
-                {/* Selección de duración: Horas o Infinito */}
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-300 mb-2">
-                    Duración de la votación
-                  </label>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-                    <div
-                      onClick={() => setDurationMode('custom')}
-                      className={`p-3.5 rounded-2xl cursor-pointer transition ${
-                        durationMode === 'custom'
-                          ? 'bg-white text-neutral-950 font-bold'
-                          : 'bg-neutral-950 text-neutral-300 hover:bg-neutral-850'
-                      }`}
-                    >
-                      <span className="block text-xs">Tiempo Límite en Horas</span>
-                      <span className="text-[11px] font-normal opacity-80">
-                        Se cierra automáticamente y genera el Top 3
-                      </span>
-                    </div>
-
-                    <div
-                      onClick={() => setDurationMode('infinite')}
-                      className={`p-3.5 rounded-2xl cursor-pointer transition ${
-                        durationMode === 'infinite'
-                          ? 'bg-white text-neutral-950 font-bold'
-                          : 'bg-neutral-950 text-neutral-300 hover:bg-neutral-850'
-                      }`}
-                    >
-                      <span className="block text-xs">Tiempo Infinito / Indefinido</span>
-                      <span className="text-[11px] font-normal opacity-80">
-                        Dura hasta que el admin decida cerrarla manualmente
-                      </span>
-                    </div>
-                  </div>
-
-                  {durationMode === 'custom' && (
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1">
-                        <input
-                          type="number"
-                          min="0.1"
-                          step="0.5"
-                          required
-                          value={customHours}
-                          onChange={(e) => setCustomHours(e.target.value)}
-                          placeholder="Número de horas"
-                          className="w-full px-4 py-3 rounded-2xl bg-neutral-950 text-white text-xs placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
-                        />
-                      </div>
-                      <span className="text-xs text-neutral-400 font-medium">horas</span>
-
-                      {/* Botones de sugerencia rápida */}
-                      <button
-                        type="button"
-                        onClick={() => setCustomHours('1')}
-                        className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-[11px] text-neutral-300 cursor-pointer"
-                      >
-                        1h
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCustomHours('24')}
-                        className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-[11px] text-neutral-300 cursor-pointer"
-                      >
-                        24h
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCustomHours('72')}
-                        className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-[11px] text-neutral-300 cursor-pointer"
-                      >
-                        3 días (72h)
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-sm transition cursor-pointer shadow-md text-center"
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div
+                  onClick={() => setDurationMode('custom')}
+                  className={`p-3.5 rounded-2xl cursor-pointer transition ${
+                    durationMode === 'custom'
+                      ? 'bg-white text-neutral-950 font-bold'
+                      : 'bg-neutral-950 text-neutral-300 hover:bg-neutral-850'
+                  }`}
                 >
-                  Lanzar esta dinámica
-                </button>
-              </form>
-            </div>
+                  <span className="block text-xs">Tiempo Límite en Horas</span>
+                </div>
+
+                <div
+                  onClick={() => setDurationMode('infinite')}
+                  className={`p-3.5 rounded-2xl cursor-pointer transition ${
+                    durationMode === 'infinite'
+                      ? 'bg-white text-neutral-950 font-bold'
+                      : 'bg-neutral-950 text-neutral-300 hover:bg-neutral-850'
+                  }`}
+                >
+                  <span className="block text-xs">Tiempo Indefinido</span>
+                </div>
+              </div>
+
+              {durationMode === 'custom' && (
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="0.5"
+                      required
+                      value={customHours}
+                      onChange={(e) => setCustomHours(e.target.value)}
+                      placeholder="Número de horas"
+                      className="w-full px-4 py-3 rounded-2xl bg-neutral-950 text-white text-xs placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    />
+                  </div>
+                  <span className="text-xs text-neutral-400 font-medium">horas</span>
+
+                  <button
+                    type="button"
+                    onClick={() => setCustomHours('1')}
+                    className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-[11px] text-neutral-300 cursor-pointer"
+                  >
+                    1h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomHours('24')}
+                    className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-[11px] text-neutral-300 cursor-pointer"
+                  >
+                    24h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomHours('72')}
+                    className="px-3 py-2 rounded-xl bg-neutral-950 hover:bg-neutral-800 text-[11px] text-neutral-300 cursor-pointer"
+                  >
+                    72h
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="w-full py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-sm transition cursor-pointer shadow-md text-center"
+              >
+                Crear Dinámica
+              </button>
+            </form>
           </div>
 
           {/* SECCIÓN 2: CONFIGURACIÓN DE MODO DE VOTACIÓN (1v1, Swipe o Ambos) */}
           <div className="p-6 sm:p-8 rounded-3xl bg-neutral-900 space-y-6">
             <div>
-              <span className="text-xs uppercase tracking-wider text-amber-400 font-semibold block mb-1">
-                Regla de Torneo
-              </span>
               <h2 className="text-2xl font-bold text-white tracking-tight">
                 Modalidad de Votación Permitida
               </h2>
-              <p className="text-sm text-neutral-400 font-light mt-1">
-                Elige si los usuarios votarán únicamente en duelos 1v1, deslizando tarjetas (Swipe), o si tendrán acceso a ambas opciones.
-              </p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -749,7 +869,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   No hay fotografías en la plataforma en este momento.
                 </p>
                 <p className="text-neutral-500 text-xs mt-1">
-                  Los usuarios pueden usar la pestaña "Subir foto" para añadir sus capturas del campus.
+                  Los usuarios pueden usar la pestaña "Subir foto" para añadir sus capturas.
                 </p>
               </div>
             ) : (
