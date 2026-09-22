@@ -8,10 +8,13 @@ export const PhotoDetailModal: React.FC = () => {
     toggleFavorite,
     addComment,
     likeComment,
+    isAdmin,
+    deletePhoto,
   } = usePhotos();
 
   const [authorName, setAuthorName] = useState('');
   const [commentText, setCommentText] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   if (!selectedPhoto) return null;
 
@@ -141,6 +144,39 @@ export const PhotoDetailModal: React.FC = () => {
                   ? 'Guardada en tus Favoritas (Clic para quitar)'
                   : 'Marcar como Favorita'}
               </button>
+
+              {isAdmin && (
+                <div className="mt-3">
+                  {confirmDelete ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          deletePhoto(selectedPhoto.id);
+                        }}
+                        className="flex-1 py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 font-bold text-xs text-white transition cursor-pointer"
+                      >
+                        Sí, eliminar foto
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDelete(false)}
+                        className="py-2.5 px-3 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-xs text-neutral-300 transition cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(true)}
+                      className="w-full py-2 px-3 rounded-xl bg-rose-950/40 hover:bg-rose-950/70 text-rose-400 font-semibold text-xs transition cursor-pointer text-center"
+                    >
+                      Eliminar fotografía (Admin)
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Comments Section */}

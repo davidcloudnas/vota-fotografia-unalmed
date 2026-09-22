@@ -248,12 +248,30 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   });
 
   // Global multi-user sync state
+  const DELETED_PHOTOS_KEY = 'fotografia_unalmed_deleted_ids_v1';
+  const [deletedPhotoIds, setDeletedPhotoIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(DELETED_PHOTOS_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [isSyncingGlobalVotes, setIsSyncingGlobalVotes] = useState(false);
   const [lastGlobalSyncTime, setLastGlobalSyncTime] = useState<number | null>(null);
   const isSyncConfigured = isSharedStoreConfigured();
   const syncProviderName = getActiveSyncProviderName();
   const syncTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const isUserActionRef = React.useRef<boolean>(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DELETED_PHOTOS_KEY, JSON.stringify(deletedPhotoIds));
+    } catch {
+      // storage
+    }
+  }, [deletedPhotoIds]);
 
   // Sync to local storage
   useEffect(() => {
@@ -587,7 +605,10 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const syncGlobalVotes = useCallback(async (): Promise<boolean> => {
     setIsSyncingGlobalVotes(true);
     try {
-      const remote = await fetchRemoteSharedState();
+      const fetchPromise = fetchRemoteSharedState();
+      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+      const remote = await Promise.race([fetchPromise, timeoutPromise]);
+
       if (remote) {
         setPhotos((prev) => {
           const currentLocal = latestStateRef.current;
@@ -597,6 +618,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               totalVotesCount: currentLocal.totalVotesCount,
               activeDynamic: currentLocal.activeDynamic,
               dynamics: currentLocal.dynamics,
+              deletedPhotoIds: currentLocal.deletedPhotoIds,
             },
             remote
           );
@@ -604,6 +626,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setTotalVotesCount(merged.totalVotesCount);
             if (merged.activeDynamic) setActiveDynamic(merged.activeDynamic);
             if (merged.dynamics) setDynamics(merged.dynamics);
+            if (merged.deletedPhotoIds) setDeletedPhotoIds(merged.deletedPhotoIds);
             return merged.photos;
           }
           return prev;
@@ -622,14 +645,17 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const publishCurrentStateToGlobal = useCallback(async (): Promise<boolean> => {
     setIsSyncingGlobalVotes(true);
     try {
-      const ok = await pushRemoteSharedState({
+      const pushPromise = pushRemoteSharedState({
         version: 1,
         updatedAt: Date.now(),
         totalVotesCount,
         photos,
         activeDynamic,
         dynamics,
+        deletedPhotoIds,
       });
+      const timeoutPromise = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5500));
+      const ok = await Promise.race([pushPromise, timeoutPromise]);
       if (ok) {
         setLastGlobalSyncTime(Date.now());
       }
@@ -640,7 +666,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } finally {
       setIsSyncingGlobalVotes(false);
     }
-  }, [totalVotesCount, photos, activeDynamic, dynamics]);
+  }, [totalVotesCount, photos, activeDynamic, dynamics, deletedPhotoIds]);
 
   // Keep ref to latest state for unload/refresh protection
   const latestStateRef = React.useRef({
@@ -648,8 +674,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     totalVotesCount,
     activeDynamic,
     dynamics,
+    deletedPhotoIds,
   });
-  latestStateRef.current = { photos, totalVotesCount, activeDynamic, dynamics };
+  latestStateRef.current = { photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds };
   const hasPendingPushRef = React.useRef(false);
 
   // Initial pull on enter and periodic background polling (every 8 seconds)
@@ -945,6 +972,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         photos: updated,
         activeDynamic: latestStateRef.current.activeDynamic,
         dynamics: latestStateRef.current.dynamics,
+        deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
       }).catch((e) => console.warn('Error sincronizando foto nueva:', e));
       return updated;
     });
@@ -952,7 +980,28 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const deletePhoto = (photoId: string) => {
     isUserActionRef.current = true;
-    setPhotos((prev) => prev.filter((p) => p.id !== photoId));
+    const nextDeletedIds = Array.from(new Set([...(latestStateRef.current.deletedPhotoIds || []), photoId]));
+    setDeletedPhotoIds(nextDeletedIds);
+
+    setPhotos((prev) => {
+      const updatedPhotos = prev.filter((p) => p.id !== photoId);
+      latestStateRef.current.photos = updatedPhotos;
+      latestStateRef.current.deletedPhotoIds = nextDeletedIds;
+
+      // Immediate remote push with tombstone so other devices delete it instantly!
+      pushRemoteSharedState({
+        version: 1,
+        updatedAt: Date.now(),
+        totalVotesCount: latestStateRef.current.totalVotesCount,
+        photos: updatedPhotos,
+        activeDynamic: latestStateRef.current.activeDynamic,
+        dynamics: latestStateRef.current.dynamics,
+        deletedPhotoIds: nextDeletedIds,
+      }).catch((e) => console.warn('Error sincronizando eliminación de foto:', e));
+
+      return updatedPhotos;
+    });
+
     if (selectedPhotoId === photoId) {
       setSelectedPhotoId(null);
     }

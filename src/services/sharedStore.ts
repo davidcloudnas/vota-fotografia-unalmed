@@ -8,9 +8,27 @@ export interface SharedAppState {
   photos: Photo[];
   activeDynamic: DynamicSession | null;
   dynamics: DynamicSession[];
+  deletedPhotoIds?: string[];
 }
 
 const REDIS_KEY = 'unalmed_global_state_v1';
+
+/**
+ * Safe fetch with hard timeout to prevent UI from freezing in "Comprobando..."
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 4500): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 /**
  * Returns true if there is a configured remote storage for real-time votes
@@ -50,9 +68,12 @@ export interface VercelDiagnostics {
 
 export async function fetchVercelDiagnostics(): Promise<VercelDiagnostics | null> {
   try {
-    const res = await fetch('/api/sync?diagnostic=1');
+    const res = await fetchWithTimeout('/api/sync?diagnostic=1', {}, 4000);
     if (res.ok) {
-      return (await res.json()) as VercelDiagnostics;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        return (await res.json()) as VercelDiagnostics;
+      }
     }
   } catch {
     // offline or local dev without serverless api
@@ -84,7 +105,7 @@ function parseSharedStateData(data: unknown): SharedAppState | null {
 }
 
 /**
- * Fetch latest shared votes & app state from remote store
+ * Fetch latest shared votes & app state from remote store with strict 4.5s timeout
  */
 export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
   const syncUrl = APP_CONFIG.syncApiUrl;
@@ -92,11 +113,15 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
   // Option 1: Custom Webhook / Google Apps Script (Direct client fetch)
   if (syncUrl) {
     try {
-      const res = await fetch(syncUrl, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        redirect: 'follow',
-      });
+      const res = await fetchWithTimeout(
+        syncUrl,
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          redirect: 'follow',
+        },
+        4500
+      );
       if (res.ok) {
         const text = await res.text();
         const parsed = parseSharedStateData(text);
@@ -109,14 +134,21 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
 
   // Option 2: Built-in Vercel Serverless Function `/api/sync` (handles backend Google Apps Script and Redis)
   try {
-    const res = await fetch('/api/sync', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
+    const res = await fetchWithTimeout(
+      '/api/sync',
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      },
+      3500
+    );
     if (res.ok) {
-      const json = await res.json();
-      const parsed = parseSharedStateData(json);
-      if (parsed) return parsed;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const json = await res.json();
+        const parsed = parseSharedStateData(json);
+        if (parsed) return parsed;
+      }
     }
   } catch {
     // Expected in purely static dev or if not provisioned
@@ -126,11 +158,15 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
   if (APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
     try {
       const url = `${APP_CONFIG.kvRestApiUrl.replace(/\/$/, '')}/get/${REDIS_KEY}`;
-      const res = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${APP_CONFIG.kvRestApiToken}`,
+      const res = await fetchWithTimeout(
+        url,
+        {
+          headers: {
+            Authorization: `Bearer ${APP_CONFIG.kvRestApiToken}`,
+          },
         },
-      });
+        3500
+      );
       if (res.ok) {
         const body = await res.json();
         if (body.result) {
@@ -147,7 +183,7 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
 }
 
 /**
- * Push updated votes & app state to remote store
+ * Push updated votes & app state to remote store with strict timeout
  */
 export async function pushRemoteSharedState(state: SharedAppState): Promise<boolean> {
   const payload = {
@@ -161,26 +197,32 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
   // Option 1: Custom Webhook / Google Apps Script
   if (syncUrl) {
     try {
-      const res = await fetch(syncUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: bodyStr,
-        redirect: 'follow',
-        // Note: Browsers throw if keepalive flag is used on bodies > 64KB!
-        ...(bodyStr.length < 60000 ? { keepalive: true } : {}),
-      });
+      const res = await fetchWithTimeout(
+        syncUrl,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: bodyStr,
+          redirect: 'follow',
+        },
+        5000
+      );
       if (res.ok) {
         pushedSuccessfully = true;
       }
     } catch {
       // If CORS redirect throws in browser, try mode: 'no-cors' so doPost is executed by Google
       try {
-        await fetch(syncUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: bodyStr,
-        });
+        await fetchWithTimeout(
+          syncUrl,
+          {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: bodyStr,
+          },
+          5000
+        );
         pushedSuccessfully = true;
       } catch (noCorsErr) {
         console.warn('Error enviando a Google Apps Script:', noCorsErr);
@@ -190,14 +232,20 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
 
   // Option 2: Built-in Vercel Serverless Function `/api/sync` (bypasses browser CORS to Apps Script / Redis)
   try {
-    const res = await fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: bodyStr,
-      ...(bodyStr.length < 60000 ? { keepalive: true } : {}),
-    });
+    const res = await fetchWithTimeout(
+      '/api/sync',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: bodyStr,
+      },
+      4000
+    );
     if (res.ok) {
-      pushedSuccessfully = true;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        pushedSuccessfully = true;
+      }
     }
   } catch {
     // Ignore in purely static dev
@@ -207,14 +255,18 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
   if (!pushedSuccessfully && APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
     try {
       const url = `${APP_CONFIG.kvRestApiUrl.replace(/\/$/, '')}/set/${REDIS_KEY}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${APP_CONFIG.kvRestApiToken}`,
-          'Content-Type': 'application/json',
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${APP_CONFIG.kvRestApiToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: bodyStr,
         },
-        body: bodyStr,
-      });
+        4000
+      );
       if (res.ok) pushedSuccessfully = true;
     } catch (err) {
       console.warn('Error enviando estado a Vercel KV / Upstash:', err);
@@ -242,7 +294,7 @@ export function sendBeaconSharedState(state: SharedAppState): boolean {
 }
 
 /**
- * Intelligent merger for photos, votes, comments, and dynamics
+ * Intelligent merger for photos, votes, comments, dynamics and deleted tombstones
  */
 export function mergeAppState(
   local: {
@@ -250,6 +302,7 @@ export function mergeAppState(
     totalVotesCount: number;
     activeDynamic: DynamicSession | null;
     dynamics: DynamicSession[];
+    deletedPhotoIds?: string[];
   },
   remote: SharedAppState
 ): {
@@ -257,22 +310,46 @@ export function mergeAppState(
   totalVotesCount: number;
   activeDynamic: DynamicSession | null;
   dynamics: DynamicSession[];
+  deletedPhotoIds: string[];
   hasChanges: boolean;
 } {
   let hasChanges = false;
 
-  // 1. Total votes: keep highest cumulative count
+  // 1. Combine deleted photo IDs (tombstones) so deleted photos NEVER reappear
+  const allDeletedIds = new Set<string>([
+    ...(local.deletedPhotoIds || []),
+    ...(remote.deletedPhotoIds || []),
+  ]);
+
+  if (allDeletedIds.size > (local.deletedPhotoIds?.length || 0)) {
+    hasChanges = true;
+  }
+
+  // Filter out any locally existing photo that was deleted
+  const filteredLocalPhotos = local.photos.filter((p) => {
+    if (allDeletedIds.has(p.id)) {
+      hasChanges = true;
+      return false;
+    }
+    return true;
+  });
+
+  // 2. Total votes: keep highest cumulative count
   const newTotalVotes = Math.max(local.totalVotesCount, remote.totalVotesCount || 0);
   if (newTotalVotes !== local.totalVotesCount) {
     hasChanges = true;
   }
 
-  // 2. Merge photos and their cumulative votes
+  // 3. Merge photos and their cumulative votes
   const remoteMap = new Map<string, Photo>();
-  remote.photos.forEach((rp) => remoteMap.set(rp.id, rp));
+  (remote.photos || []).forEach((rp) => {
+    if (!allDeletedIds.has(rp.id)) {
+      remoteMap.set(rp.id, rp);
+    }
+  });
 
-  const localIds = new Set(local.photos.map((p) => p.id));
-  const mergedPhotos: Photo[] = local.photos.map((localPhoto) => {
+  const localIds = new Set(filteredLocalPhotos.map((p) => p.id));
+  const mergedPhotos: Photo[] = filteredLocalPhotos.map((localPhoto) => {
     const remotePhoto = remoteMap.get(localPhoto.id);
     if (!remotePhoto) return localPhoto;
 
@@ -325,15 +402,19 @@ export function mergeAppState(
     };
   });
 
-  // Include any new photos from remote that were not local
-  remote.photos.forEach((remotePhoto) => {
-    if (!localIds.has(remotePhoto.id)) {
-      mergedPhotos.push(remotePhoto);
+  // Include any new photos from remote that were not local and NOT deleted
+  const newRemotePhotos: Photo[] = [];
+  (remote.photos || []).forEach((remotePhoto) => {
+    if (!localIds.has(remotePhoto.id) && !allDeletedIds.has(remotePhoto.id)) {
+      newRemotePhotos.push(remotePhoto);
       hasChanges = true;
     }
   });
+  if (newRemotePhotos.length > 0) {
+    mergedPhotos.unshift(...newRemotePhotos);
+  }
 
-  // 3. Dynamic session
+  // 4. Dynamic session
   let mergedActiveDynamic = local.activeDynamic;
   const isOpeningDynamic = (d?: DynamicSession | null) =>
     !d ||
@@ -358,23 +439,12 @@ export function mergeAppState(
     hasChanges = true;
   }
 
-  // 4. Dynamics history
-  const historyMap = new Map<string, DynamicSession>();
-  local.dynamics.filter((d) => !isOpeningDynamic(d)).forEach((d) => historyMap.set(d.id, d));
-  (remote.dynamics || [])
-    .filter((rd) => !isOpeningDynamic(rd))
-    .forEach((rd) => {
-      if (!historyMap.has(rd.id)) {
-        historyMap.set(rd.id, rd);
-        hasChanges = true;
-      }
-    });
-
   return {
     photos: mergedPhotos,
     totalVotesCount: newTotalVotes,
     activeDynamic: mergedActiveDynamic,
-    dynamics: Array.from(historyMap.values()),
+    dynamics: local.dynamics,
+    deletedPhotoIds: Array.from(allDeletedIds),
     hasChanges,
   };
 }

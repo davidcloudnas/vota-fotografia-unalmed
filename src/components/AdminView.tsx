@@ -70,6 +70,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [vercelDiag, setVercelDiag] = useState<VercelDiagnostics | null>(null);
   const [checkingVercel, setCheckingVercel] = useState(false);
   const [scriptCopied, setScriptCopied] = useState(false);
+  const [isPublishingLocal, setIsPublishingLocal] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
 
   // Form state for creating a new dynamic
   const [newTitle, setNewTitle] = useState('');
@@ -503,27 +506,32 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         : 'Comprobado: Todo sincronizado.'
                     );
                   }}
-                  disabled={isSyncingGlobalVotes}
-                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold transition cursor-pointer"
+                  disabled={isSyncingGlobalVotes || isPublishingLocal}
+                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-60 text-neutral-200 text-xs font-semibold transition cursor-pointer"
                 >
-                  {isSyncingGlobalVotes ? 'Comprobando...' : '↻ Sincronizar de la Nube'}
+                  {isSyncingGlobalVotes && !isPublishingLocal ? 'Comprobando...' : '↻ Sincronizar de la Nube'}
                 </button>
 
                 <button
                   type="button"
                   onClick={async () => {
                     setSyncGlobalStatusMsg('');
-                    const ok = await publishCurrentStateToGlobal();
-                    setSyncGlobalStatusMsg(
-                      ok
-                        ? '✓ ¡Votos, fotos y dinámicas publicados exitosamente a todos los usuarios!'
-                        : 'Aviso: No se pudo subir. Verifica la conexión.'
-                    );
+                    setIsPublishingLocal(true);
+                    try {
+                      const ok = await publishCurrentStateToGlobal();
+                      setSyncGlobalStatusMsg(
+                        ok
+                          ? '✓ ¡Votos, fotos y dinámicas publicados exitosamente a todos los usuarios!'
+                          : 'Aviso: No se pudo subir. Verifica la conexión o URL de sincronización.'
+                      );
+                    } finally {
+                      setIsPublishingLocal(false);
+                    }
                   }}
-                  disabled={isSyncingGlobalVotes}
-                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-xs transition cursor-pointer"
+                  disabled={isPublishingLocal || isSyncingGlobalVotes}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-60 text-neutral-950 font-bold text-xs transition cursor-pointer"
                 >
-                  ↑ Forzar Sincronización
+                  {isPublishingLocal ? 'Publicando...' : '↑ Forzar Sincronización'}
                 </button>
               </div>
             </div>
@@ -1029,20 +1037,32 @@ function saveState(data) {
                   Subir nueva foto
                 </button>
                 {photos.length > 0 && (
-                  <button
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          '¿Deseas vaciar todas las fotografías y votos de la base de datos local?'
-                        )
-                      ) {
-                        resetAllData();
-                      }
-                    }}
-                    className="px-4 py-2.5 rounded-full bg-rose-950/70 hover:bg-rose-900 text-xs font-semibold text-rose-300 transition cursor-pointer"
-                  >
-                    Borrar todas
-                  </button>
+                  confirmDeleteAll ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          resetAllData();
+                          setConfirmDeleteAll(false);
+                        }}
+                        className="px-3.5 py-2 rounded-full bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white transition cursor-pointer"
+                      >
+                        Sí, Vaciar Todo
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteAll(false)}
+                        className="px-3 py-2 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 transition cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDeleteAll(true)}
+                      className="px-4 py-2.5 rounded-full bg-rose-950/70 hover:bg-rose-900 text-xs font-semibold text-rose-300 transition cursor-pointer"
+                    >
+                      Borrar todas
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -1084,16 +1104,35 @@ function saveState(data) {
                       <span className="text-xs text-neutral-500">
                         {p.matchesWon}/{p.matchesPlayed} duelos
                       </span>
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`¿Eliminar la foto "${p.title}"?`)) {
-                            deletePhoto(p.id);
-                          }
-                        }}
-                        className="px-3.5 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 text-xs font-semibold transition cursor-pointer"
-                      >
-                        Eliminar
-                      </button>
+                      {confirmDeleteId === p.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              deletePhoto(p.id);
+                              setConfirmDeleteId(null);
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition cursor-pointer"
+                          >
+                            Sí, Eliminar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-2.5 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs transition cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(p.id)}
+                          className="px-3.5 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 text-xs font-semibold transition cursor-pointer"
+                        >
+                          Eliminar
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
