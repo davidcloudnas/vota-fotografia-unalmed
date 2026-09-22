@@ -76,18 +76,6 @@ function MainContent() {
             >
               Acceso Administrador
             </button>
-            {photos.length > 0 && (
-              <button
-                onClick={() => {
-                  if (window.confirm('¿Deseas reiniciar y limpiar los datos locales?')) {
-                    resetAllData();
-                  }
-                }}
-                className="text-neutral-600 hover:text-neutral-400 transition cursor-pointer"
-              >
-                Limpiar datos locales
-              </button>
-            )}
           </div>
         </div>
       </footer>

@@ -8,21 +8,78 @@ export interface GoogleAdminUser {
 const GOOGLE_CLIENT_ID = '751256592070-6iu1rpesoejsbn44nrlgn0o298cim3g6.apps.googleusercontent.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-let cachedAccessToken: string | null = null;
-let cachedUser: GoogleAdminUser | null = null;
+const GOOGLE_TOKEN_STORAGE_KEY = 'fotografia_unalmed_google_access_token_v1';
+const GOOGLE_USER_STORAGE_KEY = 'fotografia_unalmed_google_user_v1';
 
-// Initialize or retrieve token from memory
+let cachedAccessToken: string | null = (() => {
+  try {
+    return (
+      sessionStorage.getItem(GOOGLE_TOKEN_STORAGE_KEY) ||
+      localStorage.getItem(GOOGLE_TOKEN_STORAGE_KEY)
+    );
+  } catch {
+    return null;
+  }
+})();
+
+let cachedUser: GoogleAdminUser | null = (() => {
+  try {
+    const raw =
+      sessionStorage.getItem(GOOGLE_USER_STORAGE_KEY) ||
+      localStorage.getItem(GOOGLE_USER_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+})();
+
+// Initialize or retrieve token from memory or storage
 export const getAccessToken = (): string | null => {
-  return cachedAccessToken;
+  if (cachedAccessToken) return cachedAccessToken;
+  try {
+    return (
+      sessionStorage.getItem(GOOGLE_TOKEN_STORAGE_KEY) ||
+      localStorage.getItem(GOOGLE_TOKEN_STORAGE_KEY)
+    );
+  } catch {
+    return null;
+  }
+};
+
+export const getStoredGoogleUser = (): GoogleAdminUser | null => {
+  if (cachedUser) return cachedUser;
+  try {
+    const raw =
+      sessionStorage.getItem(GOOGLE_USER_STORAGE_KEY) ||
+      localStorage.getItem(GOOGLE_USER_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 };
 
 export const setManualAccessToken = (token: string) => {
-  cachedAccessToken = token.trim();
+  const cleanToken = token.trim();
+  cachedAccessToken = cleanToken;
+  try {
+    sessionStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, cleanToken);
+    localStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, cleanToken);
+  } catch {
+    // storage error
+  }
 };
 
 export const clearGoogleAuth = () => {
   cachedAccessToken = null;
   cachedUser = null;
+  try {
+    sessionStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
+    localStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(GOOGLE_USER_STORAGE_KEY);
+    localStorage.removeItem(GOOGLE_USER_STORAGE_KEY);
+  } catch {
+    // storage error
+  }
 };
 
 // Request OAuth token using Google Identity Services (GIS)
@@ -81,6 +138,12 @@ function initAndRequestToken(
 
         const accessToken = response.access_token;
         cachedAccessToken = accessToken;
+        try {
+          sessionStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, accessToken);
+          localStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, accessToken);
+        } catch {
+          // storage error
+        }
 
         // Fetch user profile info directly from Google OAuth2 userinfo endpoint
         let user: GoogleAdminUser | null = null;
@@ -96,6 +159,12 @@ function initAndRequestToken(
               picture: data.picture,
             };
             cachedUser = user;
+            try {
+              sessionStorage.setItem(GOOGLE_USER_STORAGE_KEY, JSON.stringify(user));
+              localStorage.setItem(GOOGLE_USER_STORAGE_KEY, JSON.stringify(user));
+            } catch {
+              // storage error
+            }
           }
         } catch (err) {
           console.warn('No se pudo obtener información del perfil:', err);

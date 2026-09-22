@@ -203,6 +203,12 @@ export async function fetchPublicFolderFiles(
   apiKey?: string,
   accessToken?: string
 ): Promise<DriveUploadResult[]> {
+  if (!apiKey && !accessToken) {
+    throw new Error(
+      'Para leer o recargar las fotos de Google Drive, primero debes vincular tu cuenta presionando "Vincular mi Google Drive" arriba.'
+    );
+  }
+
   let url = `${DRIVE_API_URL}/files?q='${folderId}'+in+parents+and+trashed=false+and+mimeType+contains+'image/'&fields=files(id,name,webViewLink,thumbnailLink,description,createdTime)&pageSize=100`;
   if (apiKey) {
     url += `&key=${encodeURIComponent(apiKey)}`;
@@ -215,8 +221,28 @@ export async function fetchPublicFolderFiles(
 
   const res = await fetch(url, { headers });
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Error leyendo archivos de la carpeta pública de Drive: ${errText}`);
+    let friendlyMsg = 'No se pudo leer la carpeta de Google Drive.';
+    try {
+      const errJson = await res.json();
+      const code = errJson?.error?.code;
+      const message = errJson?.error?.message || '';
+      if (code === 401 || message.includes('Invalid Credentials') || message.includes('authError')) {
+        friendlyMsg =
+          'Tu sesión de Google Drive ha expirado. Por favor presiona "Vincular mi Google Drive" arriba para reconectar.';
+      } else if (code === 403 && (message.includes('unregistered callers') || message.includes('API Key'))) {
+        friendlyMsg =
+          'Para consultar y leer las fotos de tu carpeta de Drive, debes presionar "Vincular mi Google Drive" arriba.';
+      } else if (code === 404) {
+        friendlyMsg =
+          'No se encontró la carpeta en Google Drive. Verifica que el ID o enlace de la carpeta sea el correcto.';
+      } else {
+        friendlyMsg = `Error de Google Drive (${code || res.status}): ${message || res.statusText}`;
+      }
+    } catch {
+      const errText = await res.text().catch(() => '');
+      friendlyMsg = `Error consultando Google Drive: ${errText || res.statusText}`;
+    }
+    throw new Error(friendlyMsg);
   }
 
   const data = await res.json();
@@ -241,6 +267,9 @@ export async function fetchDriveFolderDetails(
   accessToken?: string
 ): Promise<{ id: string; name: string; webViewLink?: string } | null> {
   if (!folderId) return null;
+  if (!apiKey && !accessToken) {
+    return null;
+  }
   let url = `${DRIVE_API_URL}/files/${folderId}?fields=id,name,webViewLink,trashed`;
   if (apiKey) {
     url += `&key=${encodeURIComponent(apiKey)}`;

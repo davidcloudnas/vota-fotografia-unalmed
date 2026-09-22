@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { usePhotos } from '../context/PhotoContext';
 import { ActiveTab } from '../types';
+import { compressImageFile } from '../utils/imageCompressor';
 
 interface UploadViewProps {
   onUploaded: (tab: ActiveTab) => void;
@@ -34,22 +35,33 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
     }
   };
 
-  const processFile = (file: File) => {
+  const processFile = async (file: File) => {
     if (!file.type.startsWith('image/')) {
       alert('Por favor selecciona un archivo de imagen válido (JPG, PNG, WebP).');
       return;
     }
 
-    setSelectedFile(file);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const result = event.target?.result as string;
-      if (result) {
-        setImageUrl(result);
-        setPreviewError(false);
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      setUploadStatusMsg('Optimizando imagen...');
+      const { dataUrl, blob } = await compressImageFile(file, 1600, 0.82);
+      setSelectedFile(new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }));
+      setImageUrl(dataUrl);
+      setPreviewError(false);
+      setUploadStatusMsg('');
+    } catch {
+      // Fallback to standard reader if compression fails
+      setSelectedFile(file);
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const result = event.target?.result as string;
+        if (result) {
+          setImageUrl(result);
+          setPreviewError(false);
+        }
+      };
+      reader.readAsDataURL(file);
+      setUploadStatusMsg('');
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {

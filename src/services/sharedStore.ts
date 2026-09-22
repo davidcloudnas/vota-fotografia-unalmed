@@ -25,35 +25,104 @@ export function isSharedStoreConfigured(): boolean {
  * Get name of active sync provider for display in Admin panel
  */
 export function getActiveSyncProviderName(): string {
-  if (APP_CONFIG.syncApiUrl) return 'Google Apps Script (Tu Google Drive)';
+  const custom = APP_CONFIG.getCustomSyncUrl();
+  if (custom) return 'Google Apps Script (URL Personalizada)';
+  if (APP_CONFIG.syncApiUrl) return 'Google Apps Script (Vercel)';
   if (APP_CONFIG.kvRestApiUrl) return 'Vercel KV / Upstash Redis';
-  return 'Local (Sin variable VITE_SYNC_API_URL en Vercel)';
+  return 'Local / Pendiente de configuración';
+}
+
+/**
+ * Check diagnostics from /api/sync on Vercel (environment variables status)
+ */
+export interface VercelDiagnostics {
+  vercelEnvDetected: {
+    hasSyncApiUrl: boolean;
+    hasGoogleScriptUrl: boolean;
+    hasKvUrl: boolean;
+    hasDriveFolderId: boolean;
+    hasGoogleApiKey: boolean;
+    activeProvider: string;
+  };
+  scriptUrlConfigured: boolean;
+  timestamp: number;
+}
+
+export async function fetchVercelDiagnostics(): Promise<VercelDiagnostics | null> {
+  try {
+    const res = await fetch('/api/sync?diagnostic=1');
+    if (res.ok) {
+      return (await res.json()) as VercelDiagnostics;
+    }
+  } catch {
+    // offline or local dev without serverless api
+  }
+  return null;
+}
+
+function parseSharedStateData(data: unknown): SharedAppState | null {
+  if (!data) return null;
+  let parsed: unknown = data;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (parsed && typeof parsed === 'object') {
+    const obj = parsed as Record<string, unknown>;
+    let target = obj;
+    if (obj.state && typeof obj.state === 'object') target = obj.state as Record<string, unknown>;
+    else if (obj.data && typeof obj.data === 'object') target = obj.data as Record<string, unknown>;
+
+    if (Array.isArray(target.photos)) {
+      return target as unknown as SharedAppState;
+    }
+  }
+  return null;
 }
 
 /**
  * Fetch latest shared votes & app state from remote store
  */
 export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
-  // Option 1: Custom Webhook / Google Apps Script (Primary for Option B)
-  if (APP_CONFIG.syncApiUrl) {
+  const syncUrl = APP_CONFIG.syncApiUrl;
+
+  // Option 1: Custom Webhook / Google Apps Script (Direct client fetch)
+  if (syncUrl) {
     try {
-      const res = await fetch(APP_CONFIG.syncApiUrl, {
+      const res = await fetch(syncUrl, {
         method: 'GET',
         headers: { Accept: 'application/json' },
         redirect: 'follow',
       });
       if (res.ok) {
-        const data = await res.json();
-        if (data && typeof data === 'object' && Array.isArray(data.photos)) {
-          return data as SharedAppState;
-        }
+        const text = await res.text();
+        const parsed = parseSharedStateData(text);
+        if (parsed) return parsed;
       }
     } catch (err) {
-      console.warn('Error obteniendo estado de Google Apps Script:', err);
+      console.warn('Error obteniendo estado de Google Apps Script directo:', err);
     }
   }
 
-  // Option 2: Vercel KV / Upstash Redis REST
+  // Option 2: Built-in Vercel Serverless Function `/api/sync` (handles backend Google Apps Script and Redis)
+  try {
+    const res = await fetch('/api/sync', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const parsed = parseSharedStateData(json);
+      if (parsed) return parsed;
+    }
+  } catch {
+    // Expected in purely static dev or if not provisioned
+  }
+
+  // Option 3: Direct Vercel KV / Upstash Redis REST
   if (APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
     try {
       const url = `${APP_CONFIG.kvRestApiUrl.replace(/\/$/, '')}/get/${REDIS_KEY}`;
@@ -65,10 +134,8 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
       if (res.ok) {
         const body = await res.json();
         if (body.result) {
-          const parsed = typeof body.result === 'string' ? JSON.parse(body.result) : body.result;
-          if (parsed && Array.isArray(parsed.photos)) {
-            return parsed as SharedAppState;
-          }
+          const parsed = parseSharedStateData(body.result);
+          if (parsed) return parsed;
         }
       }
     } catch (err) {
@@ -76,27 +143,11 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
     }
   }
 
-  // Option 3: Built-in Vercel Serverless Function `/api/sync`
-  try {
-    const res = await fetch('/api/sync', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && typeof data === 'object' && Array.isArray(data.photos)) {
-        return data as SharedAppState;
-      }
-    }
-  } catch {
-    // Expected in purely static dev or if not provisioned
-  }
-
   return null;
 }
 
 /**
- * Push updated votes & app state to remote store with keepalive to prevent loss on refresh
+ * Push updated votes & app state to remote store
  */
 export async function pushRemoteSharedState(state: SharedAppState): Promise<boolean> {
   const payload = {
@@ -104,26 +155,56 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
     updatedAt: Date.now(),
   };
   const bodyStr = JSON.stringify(payload);
+  const syncUrl = APP_CONFIG.syncApiUrl;
+  let pushedSuccessfully = false;
 
   // Option 1: Custom Webhook / Google Apps Script
-  if (APP_CONFIG.syncApiUrl) {
+  if (syncUrl) {
     try {
-      const res = await fetch(APP_CONFIG.syncApiUrl, {
+      const res = await fetch(syncUrl, {
         method: 'POST',
-        // text/plain avoids CORS preflight in Google Apps Script Web Apps
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: bodyStr,
-        keepalive: true,
         redirect: 'follow',
+        // Note: Browsers throw if keepalive flag is used on bodies > 64KB!
+        ...(bodyStr.length < 60000 ? { keepalive: true } : {}),
       });
-      if (res.ok) return true;
-    } catch (err) {
-      console.warn('Error enviando estado a Google Apps Script:', err);
+      if (res.ok) {
+        pushedSuccessfully = true;
+      }
+    } catch {
+      // If CORS redirect throws in browser, try mode: 'no-cors' so doPost is executed by Google
+      try {
+        await fetch(syncUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: bodyStr,
+        });
+        pushedSuccessfully = true;
+      } catch (noCorsErr) {
+        console.warn('Error enviando a Google Apps Script:', noCorsErr);
+      }
     }
   }
 
-  // Option 2: Vercel KV / Upstash Redis REST
-  if (APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
+  // Option 2: Built-in Vercel Serverless Function `/api/sync` (bypasses browser CORS to Apps Script / Redis)
+  try {
+    const res = await fetch('/api/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: bodyStr,
+      ...(bodyStr.length < 60000 ? { keepalive: true } : {}),
+    });
+    if (res.ok) {
+      pushedSuccessfully = true;
+    }
+  } catch {
+    // Ignore in purely static dev
+  }
+
+  // Option 3: Direct Vercel KV / Upstash Redis REST
+  if (!pushedSuccessfully && APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
     try {
       const url = `${APP_CONFIG.kvRestApiUrl.replace(/\/$/, '')}/set/${REDIS_KEY}`;
       const res = await fetch(url, {
@@ -133,28 +214,14 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
           'Content-Type': 'application/json',
         },
         body: bodyStr,
-        keepalive: true,
       });
-      if (res.ok) return true;
+      if (res.ok) pushedSuccessfully = true;
     } catch (err) {
       console.warn('Error enviando estado a Vercel KV / Upstash:', err);
     }
   }
 
-  // Option 3: Built-in Vercel Serverless Function `/api/sync`
-  try {
-    const res = await fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: bodyStr,
-      keepalive: true,
-    });
-    if (res.ok) return true;
-  } catch {
-    // Ignore in purely static dev
-  }
-
-  return false;
+  return pushedSuccessfully;
 }
 
 /**

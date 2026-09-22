@@ -12,6 +12,7 @@ import { INITIAL_PHOTOS } from '../data/initialPhotos';
 import {
   requestGoogleDriveToken,
   getAccessToken,
+  getStoredGoogleUser,
   setManualAccessToken,
   clearGoogleAuth,
 } from '../services/googleAuth';
@@ -223,7 +224,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
 
   // Google Drive state
-  const [googleUser, setGoogleUser] = useState<GoogleAdminUser | null>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleAdminUser | null>(() => {
+    return getStoredGoogleUser();
+  });
   const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
   const [isUploadingToDrive, setIsUploadingToDrive] = useState<boolean>(false);
   const [driveFolder, setDriveFolder] = useState<DriveFolderInfo | null>(() => {
@@ -484,6 +487,12 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     refreshDriveFolderMetadata(targetFolderId);
 
     const token = await getAccessToken();
+    if (!token && !APP_CONFIG.googleApiKey) {
+      throw new Error(
+        'Debes vincular tu cuenta con Google Drive para leer o recargar las fotos de la carpeta. Presiona "Vincular mi Google Drive" en la parte superior.'
+      );
+    }
+
     const driveFiles = await fetchPublicFolderFiles(
       targetFolderId,
       APP_CONFIG.googleApiKey || undefined,
@@ -925,7 +934,20 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       createdAt: 'Hoy',
     };
 
-    setPhotos((prev) => [newPhoto, ...prev]);
+    setPhotos((prev) => {
+      const updated = [newPhoto, ...prev];
+      latestStateRef.current.photos = updated;
+      // Immediate push to Google Apps Script / Vercel cloud
+      pushRemoteSharedState({
+        version: 1,
+        updatedAt: Date.now(),
+        totalVotesCount: latestStateRef.current.totalVotesCount,
+        photos: updated,
+        activeDynamic: latestStateRef.current.activeDynamic,
+        dynamics: latestStateRef.current.dynamics,
+      }).catch((e) => console.warn('Error sincronizando foto nueva:', e));
+      return updated;
+    });
   };
 
   const deletePhoto = (photoId: string) => {

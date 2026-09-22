@@ -5,7 +5,7 @@ let globalStateCache: unknown = null;
 
 const REDIS_KEY = 'unalmed_global_state_v1';
 
-export default async function handler(req: IncomingMessage & { body?: unknown }, res: ServerResponse) {
+export default async function handler(req: IncomingMessage & { body?: unknown; url?: string }, res: ServerResponse) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -16,6 +16,15 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
     res.end();
     return;
   }
+
+  const scriptUrl =
+    process.env.VITE_SYNC_API_URL ||
+    process.env.SYNC_API_URL ||
+    process.env.VITE_GOOGLE_SCRIPT_URL ||
+    process.env.GOOGLE_SCRIPT_URL ||
+    process.env.VITE_APPS_SCRIPT_URL ||
+    process.env.APPS_SCRIPT_URL ||
+    '';
 
   const kvUrl =
     process.env.KV_REST_API_URL ||
@@ -28,8 +37,67 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
     process.env.VITE_KV_REST_API_TOKEN ||
     '';
 
+  const reqUrl = req.url || '';
+
+  // Diagnostic Endpoint: Check what variables are loaded in Vercel
+  if (reqUrl.includes('env_check') || reqUrl.includes('diagnostic')) {
+    res.setHeader('Content-Type', 'application/json');
+    res.statusCode = 200;
+    res.end(
+      JSON.stringify({
+        vercelEnvDetected: {
+          hasSyncApiUrl: !!(process.env.VITE_SYNC_API_URL || process.env.SYNC_API_URL),
+          hasGoogleScriptUrl: !!(process.env.VITE_GOOGLE_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL),
+          hasKvUrl: !!(process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL),
+          hasDriveFolderId: !!(process.env.VITE_DRIVE_FOLDER_ID || process.env.DRIVE_FOLDER_ID),
+          hasGoogleApiKey: !!(process.env.VITE_GOOGLE_API_KEY || process.env.GOOGLE_API_KEY),
+          activeProvider: scriptUrl
+            ? 'Google Apps Script (Vercel Backend)'
+            : kvUrl
+            ? 'Vercel KV / Upstash Redis'
+            : 'Memoria Local / Fallback',
+        },
+        scriptUrlConfigured: !!scriptUrl,
+        timestamp: Date.now(),
+      })
+    );
+    return;
+  }
+
   // GET: Retrieve current global shared state
   if (req.method === 'GET') {
+    // 1. Try Google Apps Script from server side (no browser CORS blocks)
+    if (scriptUrl) {
+      try {
+        const response = await fetch(scriptUrl, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          redirect: 'follow',
+        });
+        if (response.ok) {
+          const text = await response.text();
+          let json = null;
+          try {
+            json = JSON.parse(text);
+          } catch {}
+          let state = json;
+          if (json && typeof json === 'object') {
+            if ('state' in json && json.state) state = json.state;
+            else if ('data' in json && json.data) state = json.data;
+          }
+          if (state && typeof state === 'object' && Array.isArray((state as Record<string, unknown>).photos)) {
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            res.end(JSON.stringify(state));
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Error consultando Google Apps Script en /api/sync:', err);
+      }
+    }
+
+    // 2. Try Upstash / Vercel KV
     if (kvUrl && kvToken) {
       try {
         const fetchUrl = `${kvUrl.replace(/\/$/, '')}/get/${REDIS_KEY}`;
@@ -47,7 +115,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
           }
         }
       } catch (err) {
-        console.error('Error en /api/sync GET:', err);
+        console.error('Error en /api/sync GET Redis:', err);
       }
     }
 
@@ -71,21 +139,56 @@ export default async function handler(req: IncomingMessage & { body?: unknown },
 
       globalStateCache = payload;
 
+      let forwardedToScript = false;
+      let forwardedToKv = false;
+
+      // 1. Forward to Google Apps Script from server side
+      if (scriptUrl) {
+        try {
+          const scriptRes = await fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: rawBody,
+            redirect: 'follow',
+          });
+          if (scriptRes.ok) {
+            forwardedToScript = true;
+          }
+        } catch (scriptErr) {
+          console.error('Error reenviando a Google Apps Script en /api/sync:', scriptErr);
+        }
+      }
+
+      // 2. Forward to Upstash / Vercel KV
       if (kvUrl && kvToken) {
-        const fetchUrl = `${kvUrl.replace(/\/$/, '')}/set/${REDIS_KEY}`;
-        await fetch(fetchUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${kvToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
+        try {
+          const fetchUrl = `${kvUrl.replace(/\/$/, '')}/set/${REDIS_KEY}`;
+          const kvRes = await fetch(fetchUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${kvToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          });
+          if (kvRes.ok) {
+            forwardedToKv = true;
+          }
+        } catch (kvErr) {
+          console.error('Error reenviando a KV en /api/sync:', kvErr);
+        }
       }
 
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 200;
-      res.end(JSON.stringify({ success: true, timestamp: Date.now() }));
+      res.end(
+        JSON.stringify({
+          success: true,
+          forwardedToScript,
+          forwardedToKv,
+          timestamp: Date.now(),
+        })
+      );
     } catch (err) {
       res.statusCode = 500;
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));

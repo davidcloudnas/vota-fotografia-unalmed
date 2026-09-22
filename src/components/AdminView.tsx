@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { usePhotos } from '../context/PhotoContext';
 import { AdminVoteModeSetting } from '../types';
+import { APP_CONFIG } from '../config';
+import { fetchVercelDiagnostics, VercelDiagnostics } from '../services/sharedStore';
 
 interface AdminViewProps {
   onGoToVoting: () => void;
@@ -62,6 +64,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [showJsonImport, setShowJsonImport] = useState(false);
   const [jsonImportText, setJsonImportText] = useState('');
   const [syncGlobalStatusMsg, setSyncGlobalStatusMsg] = useState('');
+  const [syncUrlInput, setSyncUrlInput] = useState(APP_CONFIG.syncApiUrl);
+  const [syncUrlSaved, setSyncUrlSaved] = useState(false);
+  const [showGoogleScriptHelp, setShowGoogleScriptHelp] = useState(false);
+  const [vercelDiag, setVercelDiag] = useState<VercelDiagnostics | null>(null);
+  const [checkingVercel, setCheckingVercel] = useState(false);
+  const [scriptCopied, setScriptCopied] = useState(false);
 
   // Form state for creating a new dynamic
   const [newTitle, setNewTitle] = useState('');
@@ -457,6 +465,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   type="button"
                   onClick={async () => {
                     setDriveLoadStatus('');
+                    if (!googleUser) {
+                      setDriveLoadStatus(
+                        'Aviso: Para leer las fotos de tu carpeta de Google Drive, primero debes presionar "Vincular mi Google Drive" arriba.'
+                      );
+                      return;
+                    }
                     setIsLoadingDrivePhotos(true);
                     try {
                       const count = await loadPhotosFromDrive();
@@ -546,6 +560,176 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   {lastGlobalSyncTime ? new Date(lastGlobalSyncTime).toLocaleTimeString() : 'Automática'}
                 </span>
               </div>
+            </div>
+
+            {/* Configuración de URL de Sincronización y Diagnóstico Vercel */}
+            <div className="p-4 rounded-2xl bg-neutral-950 space-y-3 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <span className="text-white font-bold">
+                  Conexión en Tiempo Real (Google Apps Script / Vercel):
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setCheckingVercel(true);
+                      const diag = await fetchVercelDiagnostics();
+                      setVercelDiag(diag);
+                      setCheckingVercel(false);
+                    }}
+                    disabled={checkingVercel}
+                    className="px-3 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[11px] font-medium transition cursor-pointer"
+                  >
+                    {checkingVercel ? 'Consultando...' : '🔍 Verificar Variables en Vercel'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowGoogleScriptHelp(!showGoogleScriptHelp)}
+                    className="px-3 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-amber-400 text-[11px] font-medium transition cursor-pointer"
+                  >
+                    {showGoogleScriptHelp ? 'Ocultar código' : '📄 Ver Código Google Script'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <input
+                  type="url"
+                  value={syncUrlInput}
+                  onChange={(e) => {
+                    setSyncUrlInput(e.target.value);
+                    setSyncUrlSaved(false);
+                  }}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  className="flex-1 px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-800 text-white text-xs font-mono placeholder-neutral-600 focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    APP_CONFIG.setCustomSyncUrl(syncUrlInput);
+                    setSyncUrlSaved(true);
+                    setTimeout(() => setSyncUrlSaved(false), 4000);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold text-xs transition cursor-pointer shrink-0"
+                >
+                  {syncUrlSaved ? '✓ URL Guardada' : 'Guardar URL'}
+                </button>
+              </div>
+
+              {/* Resultado del diagnóstico de Vercel */}
+              {vercelDiag && (
+                <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800/80 space-y-1.5 text-[11px]">
+                  <span className="font-bold text-neutral-200 block">
+                    Estado detectado en servidor Vercel:
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-neutral-400">
+                    <div>
+                      • URL de Script en Vercel:{' '}
+                      <span className={vercelDiag.vercelEnvDetected.hasSyncApiUrl || vercelDiag.vercelEnvDetected.hasGoogleScriptUrl ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+                        {vercelDiag.vercelEnvDetected.hasSyncApiUrl || vercelDiag.vercelEnvDetected.hasGoogleScriptUrl
+                          ? '✓ Configurada en Vercel'
+                          : 'No detectada en backend'}
+                      </span>
+                    </div>
+                    <div>
+                      • Vercel KV / Redis:{' '}
+                      <span className={vercelDiag.vercelEnvDetected.hasKvUrl ? 'text-emerald-400 font-bold' : 'text-neutral-500'}>
+                        {vercelDiag.vercelEnvDetected.hasKvUrl ? '✓ Conectado' : 'No configurado'}
+                      </span>
+                    </div>
+                    <div>
+                      • Carpeta Drive en Vercel:{' '}
+                      <span className={vercelDiag.vercelEnvDetected.hasDriveFolderId ? 'text-emerald-400 font-bold' : 'text-neutral-500'}>
+                        {vercelDiag.vercelEnvDetected.hasDriveFolderId ? '✓ Configurada' : 'No configurada'}
+                      </span>
+                    </div>
+                    <div>
+                      • Proveedor activo:{' '}
+                      <span className="text-white font-semibold">
+                        {vercelDiag.vercelEnvDetected.activeProvider}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Instrucciones y código de Google Apps Script */}
+              {showGoogleScriptHelp && (
+                <div className="p-4 rounded-xl bg-neutral-900 border border-amber-400/30 space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-amber-400">
+                      Código probado para Google Apps Script (Almacena en tu Drive sin límite de 9KB):
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const code = `// Google Apps Script para Fotografia Unalmed
+var DB_FILENAME = "unalmed_database.json";
+
+function doGet(e) {
+  var state = getSavedState();
+  return ContentService.createTextOutput(JSON.stringify(state))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  try {
+    var contents = e.postData.contents;
+    var parsed = JSON.parse(contents);
+    saveState(parsed);
+    return ContentService.createTextOutput(JSON.stringify({ success: true, timestamp: Date.now() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ error: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function getSavedState() {
+  var files = DriveApp.getFilesByName(DB_FILENAME);
+  if (files.hasNext()) {
+    var file = files.next();
+    var content = file.getBlob().getDataAsString();
+    try {
+      return JSON.parse(content);
+    } catch (err) {
+      return { photos: [], totalVotesCount: 0 };
+    }
+  }
+  return { photos: [], totalVotesCount: 0 };
+}
+
+function saveState(data) {
+  var files = DriveApp.getFilesByName(DB_FILENAME);
+  var jsonStr = JSON.stringify(data);
+  if (files.hasNext()) {
+    var file = files.next();
+    file.setContent(jsonStr);
+  } else {
+    DriveApp.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
+  }
+}`;
+                        navigator.clipboard.writeText(code);
+                        setScriptCopied(true);
+                        setTimeout(() => setScriptCopied(false), 3000);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-amber-400 text-neutral-950 font-bold text-[11px] transition cursor-pointer"
+                    >
+                      {scriptCopied ? '✓ Copiado' : 'Copiar Código'}
+                    </button>
+                  </div>
+
+                  <ol className="list-decimal pl-4 space-y-1 text-neutral-300 text-[11px]">
+                    <li>Ve a <strong>script.google.com</strong> y crea un nuevo proyecto llamado <code>Unalmed Sync</code>.</li>
+                    <li>Reemplaza el código con el bloque copiado y guarda (Ctrl+S).</li>
+                    <li>Haz clic en <strong>Implementar &gt; Nueva implementación</strong>.</li>
+                    <li>Selecciona tipo <strong>Aplicación web</strong>.</li>
+                    <li>En <em>Ejecutar como</em>: <strong>Yo (tu cuenta)</strong>.</li>
+                    <li>En <em>Quién tiene acceso</em>: <strong>Cualquier usuario (incluso anónimos)</strong>.</li>
+                    <li>Copia la <strong>URL de la aplicación web</strong> (termina en <code>/exec</code>) y pégala en el campo de arriba.</li>
+                  </ol>
+                </div>
+              )}
             </div>
 
             {/* Herramientas discretas de respaldo JSON */}
