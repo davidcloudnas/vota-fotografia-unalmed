@@ -1,0 +1,6 @@
+{
+  "name": "Fotografia Unalmed",
+  "description": "Plataforma minimalista para subir, votar en duelos 1v1 y swipe, y comentar las mejores fotografías de la comunidad Unalmed.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
