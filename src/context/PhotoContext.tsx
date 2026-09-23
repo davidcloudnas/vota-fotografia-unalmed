@@ -59,6 +59,11 @@ interface PhotoContextType {
   clearLocalCache: () => Promise<void>;
   deletePhoto: (photoId: string) => void;
 
+  // Voter integrity (anti-fraud & single vote per photo/duel per user)
+  hasUserVotedPhoto: (photoId: string) => boolean;
+  hasUserVotedDuelPair: (idA: string, idB: string) => boolean;
+  userVotedPhotoIds: string[];
+
   // Realtime Global Synchronization (Multi-user)
   isSyncConfigured: boolean;
   syncProviderName: string;
@@ -261,6 +266,55 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return [];
     }
   });
+
+  // Voter integrity state (per-dynamic tracking to prevent double voting & infinite swipes)
+  const [userVotedPhotoIds, setUserVotedPhotoIds] = useState<string[]>(() => {
+    try {
+      const dynKey = activeDynamic?.id || 'general';
+      const stored = localStorage.getItem(`unalmed_user_voted_photos_${dynKey}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [userVotedDuelPairs, setUserVotedDuelPairs] = useState<string[]>(() => {
+    try {
+      const dynKey = activeDynamic?.id || 'general';
+      const stored = localStorage.getItem(`unalmed_user_duel_pairs_${dynKey}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      const dynKey = activeDynamic?.id || 'general';
+      const storedPhotos = localStorage.getItem(`unalmed_user_voted_photos_${dynKey}`);
+      setUserVotedPhotoIds(storedPhotos ? JSON.parse(storedPhotos) : []);
+      const storedPairs = localStorage.getItem(`unalmed_user_duel_pairs_${dynKey}`);
+      setUserVotedDuelPairs(storedPairs ? JSON.parse(storedPairs) : []);
+    } catch {
+      setUserVotedPhotoIds([]);
+      setUserVotedDuelPairs([]);
+    }
+  }, [activeDynamic?.id]);
+
+  const hasUserVotedPhoto = useCallback(
+    (photoId: string): boolean => {
+      return userVotedPhotoIds.includes(photoId);
+    },
+    [userVotedPhotoIds]
+  );
+
+  const hasUserVotedDuelPair = useCallback(
+    (idA: string, idB: string): boolean => {
+      const pairKey = [idA, idB].sort().join('__');
+      return userVotedDuelPairs.includes(pairKey);
+    },
+    [userVotedDuelPairs]
+  );
 
   const [isSyncingGlobalVotes, setIsSyncingGlobalVotes] = useState(false);
   const [lastGlobalSyncTime, setLastGlobalSyncTime] = useState<number | null>(null);
@@ -834,6 +888,21 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const nextDuel = () => {
+    if (photos.length < 2) {
+      setActiveDuel(null);
+      return;
+    }
+    // Prioritize an unvoted matchup for this user
+    for (let attempts = 0; attempts < 15; attempts++) {
+      const candidate = getRandomPair(photos);
+      if (candidate) {
+        const pairKey = [candidate[0].id, candidate[1].id].sort().join('__');
+        if (!userVotedDuelPairs.includes(pairKey)) {
+          setActiveDuel(candidate);
+          return;
+        }
+      }
+    }
     setActiveDuel(getRandomPair(photos));
   };
 
@@ -841,7 +910,26 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const voteDuel = (winnerId: string, loserId: string) => {
     if (!isVotingOpen) return;
+    const dynKey = activeDynamic?.id || 'general';
+    const pairKey = [winnerId, loserId].sort().join('__');
+
+    if (userVotedDuelPairs.includes(pairKey)) {
+      setUserNotice('Ya has votado en este enfrentamiento. Mostrando el siguiente duelo...');
+      setTimeout(() => setUserNotice(null), 3000);
+      nextDuel();
+      return;
+    }
+
     isUserActionRef.current = true;
+
+    setUserVotedDuelPairs((prev) => {
+      if (prev.includes(pairKey)) return prev;
+      const next = [...prev, pairKey];
+      try {
+        localStorage.setItem(`unalmed_user_duel_pairs_${dynKey}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
 
     setPhotos((prev) => {
       const winner = prev.find((p) => p.id === winnerId);
@@ -881,7 +969,26 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const voteSwipe = (photoId: string, liked: boolean) => {
     if (!isVotingOpen) return;
+    const dynKey = activeDynamic?.id || 'general';
+
+    // Anti-fraud: cannot vote twice for the same photo in this dynamic
+    if (userVotedPhotoIds.includes(photoId)) {
+      setUserNotice('Esta fotografía ya fue calificada en esta sesión. No se puede votar dos veces.');
+      setTimeout(() => setUserNotice(null), 3500);
+      return;
+    }
+
     isUserActionRef.current = true;
+
+    // Register user vote in this dynamic
+    setUserVotedPhotoIds((prev) => {
+      if (prev.includes(photoId)) return prev;
+      const next = [...prev, photoId];
+      try {
+        localStorage.setItem(`unalmed_user_voted_photos_${dynKey}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
 
     setPhotos((prev) =>
       prev.map((p) => {
@@ -1211,39 +1318,66 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     localStorage.removeItem(VOTES_COUNTER_KEY);
     localStorage.removeItem(DYNAMICS_KEY);
     localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
-    localStorage.removeItem(DRIVE_FOLDER_KEY);
     localStorage.removeItem(DELETED_PHOTOS_KEY);
-
-    setPhotos([]);
-    setTotalVotesCount(0);
-    setActiveDuel(null);
-    setDynamics([]);
-    setActiveDynamic(null);
-    setDeletedPhotoIds([]);
-    latestStateRef.current = {
-      photos: [],
-      totalVotesCount: 0,
-      activeDynamic: null,
-      dynamics: [],
-      deletedPhotoIds: [],
-    };
-
     await syncGlobalVotes();
   };
 
   const refreshFromCloud = useCallback(async () => {
     setIsSyncingGlobalVotes(true);
     try {
-      await clearLocalCache();
-      setUserNotice('✓ Catálogo actualizado con las últimas fotos de Google Drive.');
-      setTimeout(() => setUserNotice(null), 4000);
+      const remote = await fetchRemoteSharedState();
+      if (remote && Array.isArray(remote.photos)) {
+        const deletedSet = new Set(remote.deletedPhotoIds || []);
+        const cleanPhotos = remote.photos.filter((p) => !deletedSet.has(p.id));
+
+        setPhotos(cleanPhotos);
+        setTotalVotesCount(typeof remote.totalVotesCount === 'number' ? remote.totalVotesCount : 0);
+        setActiveDynamic(remote.activeDynamic || null);
+        setDynamics(remote.dynamics || []);
+        setDeletedPhotoIds(remote.deletedPhotoIds || []);
+        setActiveDuel(cleanPhotos.length >= 2 ? getRandomPair(cleanPhotos) : null);
+
+        latestStateRef.current = {
+          photos: cleanPhotos,
+          totalVotesCount: remote.totalVotesCount,
+          activeDynamic: remote.activeDynamic || null,
+          dynamics: remote.dynamics || [],
+          deletedPhotoIds: remote.deletedPhotoIds || [],
+        };
+
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanPhotos));
+          localStorage.setItem(VOTES_COUNTER_KEY, String(remote.totalVotesCount));
+          if (remote.activeDynamic) {
+            localStorage.setItem(ACTIVE_DYNAMIC_KEY, JSON.stringify(remote.activeDynamic));
+          } else {
+            localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
+          }
+          localStorage.setItem(DYNAMICS_KEY, JSON.stringify(remote.dynamics || []));
+          localStorage.setItem(DELETED_PHOTOS_KEY, JSON.stringify(remote.deletedPhotoIds || []));
+        } catch {}
+
+        if (driveFolder?.folderId) {
+          loadPhotosFromDrive().catch(() => {});
+        }
+
+        setUserNotice('✓ ¡Todo actualizado: fotos, puntajes, dinámicas y tiempos desde Google Drive!');
+      } else {
+        await syncGlobalVotes();
+        if (driveFolder?.folderId) {
+          await loadPhotosFromDrive();
+        }
+        setUserNotice('✓ Catálogo y fotos sincronizados con Google Drive.');
+      }
+      setLastGlobalSyncTime(Date.now());
+      setTimeout(() => setUserNotice(null), 5000);
     } catch {
-      setUserNotice('Error al actualizar desde la nube.');
-      setTimeout(() => setUserNotice(null), 3000);
+      setUserNotice('No se pudo completar la actualización desde la nube.');
+      setTimeout(() => setUserNotice(null), 3500);
     } finally {
       setIsSyncingGlobalVotes(false);
     }
-  }, [clearLocalCache]);
+  }, [driveFolder?.folderId, syncGlobalVotes, loadPhotosFromDrive]);
 
   const selectedPhoto = photos.find((p) => p.id === selectedPhotoId) || null;
 
@@ -1266,6 +1400,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         resetAllData,
         clearLocalCache,
         deletePhoto,
+        hasUserVotedPhoto,
+        hasUserVotedDuelPair,
+        userVotedPhotoIds,
         isSyncConfigured,
         syncProviderName,
         isSyncingGlobalVotes,

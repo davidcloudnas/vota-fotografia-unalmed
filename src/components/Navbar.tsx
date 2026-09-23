@@ -192,7 +192,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
         </nav>
 
         {/* Mobile Corner Actions (sm:hidden) */}
-        <div className="sm:hidden flex items-center gap-2" ref={menuRef}>
+        <div className="sm:hidden relative flex items-center gap-2" ref={menuRef}>
           {/* Quick mobile refresh button */}
           <button
             type="button"
@@ -246,7 +246,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
 
           {/* Floating Corner Dropdown Menu */}
           {mobileMenuOpen && (
-            <div className="absolute right-0 mt-2 w-60 z-50 bg-neutral-900/95 backdrop-blur-xl border border-neutral-800 rounded-2xl shadow-2xl p-2.5 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-150">
+            <div className="absolute right-0 top-full mt-2.5 w-64 max-w-[calc(100vw-2rem)] z-50 bg-neutral-900/98 backdrop-blur-2xl border border-neutral-800 rounded-2xl shadow-2xl p-2.5 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-150">
               <div className="px-3 py-1.5 border-b border-neutral-800/80 mb-1 flex items-center justify-between text-xs text-neutral-400">
                 <span>Navegación</span>
                 <span className="font-semibold text-neutral-300">{totalVotesCount} votos</span>
@@ -353,7 +353,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
                   <svg className={`w-3.5 h-3.5 ${isSyncingGlobalVotes ? 'animate-spin text-amber-400' : 'text-neutral-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
-                  <span>Refrescar fotos desde Drive</span>
+                  <span>Actualizar todo desde Drive (Nube)</span>
                 </span>
                 {isSyncingGlobalVotes && <span className="text-[10px] text-amber-400">Actualizando...</span>}
               </button>

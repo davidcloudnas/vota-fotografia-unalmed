@@ -11,8 +11,6 @@ export interface SharedAppState {
   deletedPhotoIds?: string[];
 }
 
-const REDIS_KEY = 'unalmed_global_state_v1';
-
 /**
  * Safe fetch with hard timeout to prevent UI from freezing in "Comprobando..."
  */
@@ -34,9 +32,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
  * Returns true if there is a configured remote storage for real-time votes
  */
 export function isSharedStoreConfigured(): boolean {
-  if (APP_CONFIG.syncApiUrl) return true;
-  if (APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) return true;
-  return false;
+  return Boolean(APP_CONFIG.syncApiUrl);
 }
 
 /**
@@ -73,10 +69,9 @@ export async function testSyncUrlConnection(url: string): Promise<{ success: boo
  */
 export function getActiveSyncProviderName(): string {
   const custom = APP_CONFIG.getCustomSyncUrl();
-  if (custom) return 'Google Apps Script (URL Personalizada)';
-  if (APP_CONFIG.syncApiUrl) return 'Google Apps Script (Vercel)';
-  if (APP_CONFIG.kvRestApiUrl) return 'Vercel KV / Upstash Redis';
-  return 'Local / Pendiente de configuración';
+  if (custom) return 'Google Apps Script (URL Personalizada en Drive)';
+  if (APP_CONFIG.syncApiUrl) return 'Google Apps Script (Google Drive / Vercel)';
+  return 'Google Drive (Pendiente configurar Webhook)';
 }
 
 /**
@@ -86,7 +81,6 @@ export interface VercelDiagnostics {
   vercelEnvDetected: {
     hasSyncApiUrl: boolean;
     hasGoogleScriptUrl: boolean;
-    hasKvUrl: boolean;
     hasDriveFolderId: boolean;
     hasGoogleApiKey: boolean;
     activeProvider: string;
@@ -183,31 +177,6 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
     // Expected in purely static dev or if not provisioned
   }
 
-  // Option 3: Direct Vercel KV / Upstash Redis REST
-  if (APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
-    try {
-      const url = `${APP_CONFIG.kvRestApiUrl.replace(/\/$/, '')}/get/${REDIS_KEY}`;
-      const res = await fetchWithTimeout(
-        url,
-        {
-          headers: {
-            Authorization: `Bearer ${APP_CONFIG.kvRestApiToken}`,
-          },
-        },
-        3500
-      );
-      if (res.ok) {
-        const body = await res.json();
-        if (body.result) {
-          const parsed = parseSharedStateData(body.result);
-          if (parsed) return parsed;
-        }
-      }
-    } catch (err) {
-      console.warn('Error obteniendo estado de Vercel KV / Upstash:', err);
-    }
-  }
-
   return null;
 }
 
@@ -259,7 +228,7 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
     }
   }
 
-  // Option 2: Built-in Vercel Serverless Function `/api/sync` (bypasses browser CORS to Apps Script / Redis)
+  // Option 2: Built-in Vercel Serverless Function `/api/sync` (bypasses browser CORS to Apps Script)
   try {
     const res = await fetchWithTimeout(
       '/api/sync',
@@ -278,28 +247,6 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
     }
   } catch {
     // Ignore in purely static dev
-  }
-
-  // Option 3: Direct Vercel KV / Upstash Redis REST
-  if (!pushedSuccessfully && APP_CONFIG.kvRestApiUrl && APP_CONFIG.kvRestApiToken) {
-    try {
-      const url = `${APP_CONFIG.kvRestApiUrl.replace(/\/$/, '')}/set/${REDIS_KEY}`;
-      const res = await fetchWithTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${APP_CONFIG.kvRestApiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: bodyStr,
-        },
-        4000
-      );
-      if (res.ok) pushedSuccessfully = true;
-    } catch (err) {
-      console.warn('Error enviando estado a Vercel KV / Upstash:', err);
-    }
   }
 
   return pushedSuccessfully;

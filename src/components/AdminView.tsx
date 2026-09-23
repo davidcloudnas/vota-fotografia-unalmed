@@ -50,6 +50,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     lastGlobalSyncTime,
     syncGlobalVotes,
     publishCurrentStateToGlobal,
+    refreshFromCloud,
   } = usePhotos();
 
   const [passwordInput, setPasswordInput] = useState('');
@@ -78,6 +79,50 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [testSyncResult, setTestSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
   const [clearCacheMsg, setClearCacheMsg] = useState('');
+
+  // Descarga del archivo JSON de auditoría completo (estado real de Drive y votos)
+  const handleDownloadAuditJson = () => {
+    const auditData = {
+      appName: 'Fotografia Unalmed',
+      exportedAt: new Date().toISOString(),
+      syncProvider: syncProviderName,
+      isSyncConfigured,
+      driveFolderId: driveFolder?.folderId || APP_CONFIG.defaultDriveFolderId || null,
+      totalVotesCount,
+      activeDynamic,
+      dynamicsHistory: dynamics,
+      totalPhotos: photos.length,
+      photos: photos.map((p) => ({
+        id: p.id,
+        title: p.title,
+        author: p.author,
+        location: p.location,
+        description: p.description,
+        points: p.points,
+        matchesPlayed: p.matchesPlayed,
+        matchesWon: p.matchesWon,
+        swipeLikes: p.swipeLikes,
+        swipePasses: p.swipePasses,
+        imageUrl: p.imageUrl,
+        driveFileId: p.driveFileId,
+        driveWebViewLink: p.driveWebViewLink,
+        createdAt: p.createdAt,
+        commentsCount: (p.comments || []).length,
+        comments: p.comments || [],
+      })),
+    };
+
+    const jsonStr = JSON.stringify(auditData, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `unalmed_database_auditoria_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   // Form state for creating a new dynamic
   const [newTitle, setNewTitle] = useState('');
@@ -467,54 +512,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </p>
               </div>
 
-              {/* Botones de acción rápida */}
-              <div className="flex flex-wrap items-center gap-2">
+              {/* Botones de acción del administrador */}
+              <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   type="button"
-                  onClick={async () => {
-                    setDriveLoadStatus('');
-                    if (!googleUser) {
-                      setDriveLoadStatus(
-                        'Aviso: Para leer las fotos de tu carpeta de Google Drive, primero debes presionar "Vincular mi Google Drive" arriba.'
-                      );
-                      return;
-                    }
-                    setIsLoadingDrivePhotos(true);
-                    try {
-                      const count = await loadPhotosFromDrive();
-                      setDriveLoadStatus(
-                        count > 0
-                          ? `¡Se cargaron ${count} fotos nuevas desde Google Drive y se sincronizaron con todos los usuarios!`
-                          : 'No se encontraron fotos nuevas o ya están todas sincronizadas.'
-                      );
-                    } catch (err: unknown) {
-                      const msg = err instanceof Error ? err.message : String(err);
-                      setDriveLoadStatus(`Aviso: ${msg}`);
-                    } finally {
-                      setIsLoadingDrivePhotos(false);
-                    }
-                  }}
-                  disabled={isLoadingDrivePhotos || !driveFolder}
-                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 text-xs font-semibold transition cursor-pointer"
+                  onClick={handleDownloadAuditJson}
+                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+                  title="Descarga un archivo JSON con todos los votos, fotos, IDs, comentarios y dinámicas tal como deben estar en Google Drive"
                 >
-                  {isLoadingDrivePhotos ? 'Consultando Drive...' : '↻ Recargar fotos de Drive'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setSyncGlobalStatusMsg('');
-                    const ok = await syncGlobalVotes();
-                    setSyncGlobalStatusMsg(
-                      ok
-                        ? '✓ Votos y fotografías actualizados desde la nube.'
-                        : 'Comprobado: Todo sincronizado.'
-                    );
-                  }}
-                  disabled={isSyncingGlobalVotes || isPublishingLocal}
-                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-60 text-neutral-200 text-xs font-semibold transition cursor-pointer"
-                >
-                  {isSyncingGlobalVotes && !isPublishingLocal ? 'Comprobando...' : '↻ Sincronizar de la Nube'}
+                  📥 Descargar JSON de Auditoría (Drive)
                 </button>
 
                 <button
@@ -526,7 +532,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       const ok = await publishCurrentStateToGlobal();
                       setSyncGlobalStatusMsg(
                         ok
-                          ? '✓ ¡Votos, fotos y dinámicas publicados exitosamente a todos los usuarios!'
+                          ? '✓ ¡Votos, fotos, dinámicas y cambios publicados exitosamente a todos los usuarios!'
                           : 'Aviso: No se pudo subir. Verifica la conexión o URL de sincronización.'
                       );
                     } finally {
@@ -534,9 +540,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     }
                   }}
                   disabled={isPublishingLocal || isSyncingGlobalVotes}
-                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-60 text-neutral-950 font-bold text-xs transition cursor-pointer"
+                  className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-60 text-neutral-950 font-extrabold text-xs transition cursor-pointer shadow-lg"
+                  title="Envía el estado actual del administrador a Google Drive para que todos los usuarios lo reciban al refrescar"
                 >
-                  {isPublishingLocal ? 'Publicando...' : '↑ Forzar Sincronización'}
+                  {isPublishingLocal ? 'Publicando a la Nube...' : '↑ Forzar Sincronización Global'}
                 </button>
               </div>
             </div>
@@ -674,12 +681,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         {vercelDiag.vercelEnvDetected.hasSyncApiUrl || vercelDiag.vercelEnvDetected.hasGoogleScriptUrl
                           ? '✓ Configurada en Vercel'
                           : 'No detectada en backend'}
-                      </span>
-                    </div>
-                    <div>
-                      • Vercel KV / Redis:{' '}
-                      <span className={vercelDiag.vercelEnvDetected.hasKvUrl ? 'text-emerald-400 font-bold' : 'text-neutral-500'}>
-                        {vercelDiag.vercelEnvDetected.hasKvUrl ? '✓ Conectado' : 'No configurado'}
                       </span>
                     </div>
                     <div>
@@ -1074,21 +1075,21 @@ function saveState(data) {
                   disabled={clearingCache}
                   onClick={async () => {
                     setClearingCache(true);
-                    setClearCacheMsg('Limpiando memoria...');
+                    setClearCacheMsg('Actualizando todo desde Drive...');
                     try {
-                      await clearLocalCache();
-                      setClearCacheMsg('✓ Memoria local limpiada y catálogo sincronizado con la nube.');
+                      await refreshFromCloud();
+                      setClearCacheMsg('✓ Todo actualizado (fotos, puntajes, dinámicas y tiempos) desde Google Drive.');
                     } catch {
-                      setClearCacheMsg('Error al sincronizar.');
+                      setClearCacheMsg('Error al sincronizar con Drive.');
                     } finally {
                       setClearingCache(false);
-                      setTimeout(() => setClearCacheMsg(''), 4000);
+                      setTimeout(() => setClearCacheMsg(''), 4500);
                     }
                   }}
-                  className="px-3.5 py-2.5 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 transition cursor-pointer"
-                  title="Elimina fotos viejas o residuales almacenadas en este dispositivo y consulta la nube"
+                  className="px-4 py-2.5 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-200 transition cursor-pointer flex items-center gap-1.5"
+                  title="Descarga y actualiza de inmediato todas las fotos, puntajes, dinámicas, horas y estado desde Google Drive"
                 >
-                  {clearingCache ? 'Limpiando...' : '🧹 Limpiar memoria del teléfono'}
+                  {clearingCache ? 'Actualizando todo...' : '🔄 Actualizar todo desde Drive (Nube)'}
                 </button>
                 <button
                   onClick={onGoToUpload}

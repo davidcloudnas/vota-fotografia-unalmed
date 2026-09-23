@@ -3,8 +3,6 @@ import type { IncomingMessage, ServerResponse } from 'http';
 // In-memory fallback for current container runtime
 let globalStateCache: unknown = null;
 
-const REDIS_KEY = 'unalmed_global_state_v1';
-
 export default async function handler(req: IncomingMessage & { body?: unknown; url?: string }, res: ServerResponse) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,17 +24,6 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
     process.env.APPS_SCRIPT_URL ||
     '';
 
-  const kvUrl =
-    process.env.KV_REST_API_URL ||
-    process.env.UPSTASH_REDIS_REST_URL ||
-    process.env.VITE_KV_REST_API_URL ||
-    '';
-  const kvToken =
-    process.env.KV_REST_API_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_TOKEN ||
-    process.env.VITE_KV_REST_API_TOKEN ||
-    '';
-
   const reqUrl = req.url || '';
 
   // Diagnostic Endpoint: Check what variables are loaded in Vercel
@@ -48,14 +35,11 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
         vercelEnvDetected: {
           hasSyncApiUrl: !!(process.env.VITE_SYNC_API_URL || process.env.SYNC_API_URL),
           hasGoogleScriptUrl: !!(process.env.VITE_GOOGLE_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL),
-          hasKvUrl: !!(process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL),
           hasDriveFolderId: !!(process.env.VITE_DRIVE_FOLDER_ID || process.env.DRIVE_FOLDER_ID),
           hasGoogleApiKey: !!(process.env.VITE_GOOGLE_API_KEY || process.env.GOOGLE_API_KEY),
           activeProvider: scriptUrl
-            ? 'Google Apps Script (Vercel Backend)'
-            : kvUrl
-            ? 'Vercel KV / Upstash Redis'
-            : 'Memoria Local / Fallback',
+            ? 'Google Apps Script (Google Drive / Vercel)'
+            : 'Memoria Local (Pendiente VITE_SYNC_API_URL)',
         },
         scriptUrlConfigured: !!scriptUrl,
         timestamp: Date.now(),
@@ -64,9 +48,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
     return;
   }
 
-  // GET: Retrieve current global shared state
+  // GET: Retrieve current global shared state from Google Apps Script
   if (req.method === 'GET') {
-    // 1. Try Google Apps Script from server side (no browser CORS blocks)
     if (scriptUrl) {
       try {
         const response = await fetch(scriptUrl, {
@@ -97,28 +80,6 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
       }
     }
 
-    // 2. Try Upstash / Vercel KV
-    if (kvUrl && kvToken) {
-      try {
-        const fetchUrl = `${kvUrl.replace(/\/$/, '')}/get/${REDIS_KEY}`;
-        const response = await fetch(fetchUrl, {
-          headers: { Authorization: `Bearer ${kvToken}` },
-        });
-        if (response.ok) {
-          const json = await response.json();
-          if (json.result) {
-            const parsed = typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
-            res.setHeader('Content-Type', 'application/json');
-            res.statusCode = 200;
-            res.end(JSON.stringify(parsed));
-            return;
-          }
-        }
-      } catch (err) {
-        console.error('Error en /api/sync GET Redis:', err);
-      }
-    }
-
     // In-memory fallback
     res.setHeader('Content-Type', 'application/json');
     res.statusCode = 200;
@@ -126,7 +87,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
     return;
   }
 
-  // POST: Save or merge updated state
+  // POST: Forward state to Google Apps Script
   if (req.method === 'POST') {
     try {
       // Read body
@@ -140,9 +101,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
       globalStateCache = payload;
 
       let forwardedToScript = false;
-      let forwardedToKv = false;
 
-      // 1. Forward to Google Apps Script from server side
       if (scriptUrl) {
         try {
           const scriptRes = await fetch(scriptUrl, {
@@ -159,43 +118,20 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
         }
       }
 
-      // 2. Forward to Upstash / Vercel KV
-      if (kvUrl && kvToken) {
-        try {
-          const fetchUrl = `${kvUrl.replace(/\/$/, '')}/set/${REDIS_KEY}`;
-          const kvRes = await fetch(fetchUrl, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${kvToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-          });
-          if (kvRes.ok) {
-            forwardedToKv = true;
-          }
-        } catch (kvErr) {
-          console.error('Error reenviando a KV en /api/sync:', kvErr);
-        }
-      }
-
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 200;
       res.end(
         JSON.stringify({
           success: true,
           forwardedToScript,
-          forwardedToKv,
-          timestamp: Date.now(),
+          updatedAt: Date.now(),
         })
       );
-    } catch (err) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.setHeader('Content-Type', 'application/json');
       res.statusCode = 500;
-      res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      res.end(JSON.stringify({ error: msg }));
     }
-    return;
   }
-
-  res.statusCode = 405;
-  res.end('Method Not Allowed');
 }

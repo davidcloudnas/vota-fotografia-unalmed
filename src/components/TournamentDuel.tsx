@@ -9,7 +9,7 @@ interface TournamentDuelProps {
 }
 
 export const TournamentDuel: React.FC<TournamentDuelProps> = ({ onGoToUpload, onGoToAdmin }) => {
-  const { activeDuel, voteDuel, nextDuel, openPhotoModal, photos } = usePhotos();
+  const { activeDuel, voteDuel, nextDuel, openPhotoModal, photos, hasUserVotedDuelPair } = usePhotos();
   const [selectedWinnerId, setSelectedWinnerId] = useState<string | null>(null);
 
   if (photos.length < 2 || !activeDuel || activeDuel.length < 2) {
@@ -63,8 +63,10 @@ export const TournamentDuel: React.FC<TournamentDuelProps> = ({ onGoToUpload, on
   }
 
   const [photoA, photoB] = activeDuel;
+  const isPairAlreadyVoted = Boolean(photoA && photoB && hasUserVotedDuelPair(photoA.id, photoB.id));
 
   const handleVote = (winner: Photo, loser: Photo) => {
+    if (isPairAlreadyVoted) return;
     setSelectedWinnerId(winner.id);
     setTimeout(() => {
       voteDuel(winner.id, loser.id);
@@ -94,6 +96,20 @@ export const TournamentDuel: React.FC<TournamentDuelProps> = ({ onGoToUpload, on
           </button>
         </div>
       </div>
+
+      {isPairAlreadyVoted && (
+        <div className="w-full mb-6 p-4 rounded-2xl bg-amber-400/15 border border-amber-400/30 text-amber-300 text-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+          <span>
+            Ya registraste tu voto en este enfrentamiento. Para garantizar un conteo limpio, no se permite el voto duplicado.
+          </span>
+          <button
+            onClick={nextDuel}
+            className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-xs shrink-0 cursor-pointer"
+          >
+            Siguiente duelo →
+          </button>
+        </div>
+      )}
 
       {/* Duel Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-[580px]">
@@ -161,10 +177,15 @@ export const TournamentDuel: React.FC<TournamentDuelProps> = ({ onGoToUpload, on
               {/* Action Buttons (NO ICONS, NO BORDERS) */}
               <div className="flex items-center gap-3 pt-2">
                 <button
-                  onClick={() => handleVote(photoA, photoB)}
-                  className="flex-1 py-3.5 px-6 rounded-2xl bg-white hover:bg-neutral-100 text-neutral-950 font-bold text-base transition-transform active:scale-95 cursor-pointer shadow-lg text-center"
+                  onClick={() => !isPairAlreadyVoted && handleVote(photoA, photoB)}
+                  disabled={isPairAlreadyVoted}
+                  className={`flex-1 py-3.5 px-6 rounded-2xl font-bold text-base transition-transform active:scale-95 text-center shadow-lg ${
+                    isPairAlreadyVoted
+                      ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-950 cursor-pointer'
+                  }`}
                 >
-                  Elegir esta fotografía
+                  {isPairAlreadyVoted ? 'Ya votaste en este duelo' : 'Elegir esta fotografía'}
                 </button>
                 <button
                   onClick={(e) => {
@@ -244,10 +265,15 @@ export const TournamentDuel: React.FC<TournamentDuelProps> = ({ onGoToUpload, on
               {/* Action Buttons (NO ICONS, NO BORDERS) */}
               <div className="flex items-center gap-3 pt-2">
                 <button
-                  onClick={() => handleVote(photoB, photoA)}
-                  className="flex-1 py-3.5 px-6 rounded-2xl bg-white hover:bg-neutral-100 text-neutral-950 font-bold text-base transition-transform active:scale-95 cursor-pointer shadow-lg text-center"
+                  onClick={() => !isPairAlreadyVoted && handleVote(photoB, photoA)}
+                  disabled={isPairAlreadyVoted}
+                  className={`flex-1 py-3.5 px-6 rounded-2xl font-bold text-base transition-transform active:scale-95 text-center shadow-lg ${
+                    isPairAlreadyVoted
+                      ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-950 cursor-pointer'
+                  }`}
                 >
-                  Elegir esta fotografía
+                  {isPairAlreadyVoted ? 'Ya votaste en este duelo' : 'Elegir esta fotografía'}
                 </button>
                 <button
                   onClick={(e) => {

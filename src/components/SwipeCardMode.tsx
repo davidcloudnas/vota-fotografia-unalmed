@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { motion, useMotionValue, useTransform } from 'motion/react';
 import { usePhotos } from '../context/PhotoContext';
 import { Photo } from '../types';
@@ -9,8 +9,15 @@ interface SwipeCardModeProps {
 }
 
 export const SwipeCardMode: React.FC<SwipeCardModeProps> = ({ onGoToUpload, onGoToAdmin }) => {
-  const { photos, voteSwipe, toggleFavorite, openPhotoModal } = usePhotos();
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const {
+    photos,
+    voteSwipe,
+    toggleFavorite,
+    openPhotoModal,
+    hasUserVotedPhoto,
+    userVotedPhotoIds,
+    activeDynamic,
+  } = usePhotos();
 
   // Motion values for swipe drag
   const x = useMotionValue(0);
@@ -52,13 +59,55 @@ export const SwipeCardMode: React.FC<SwipeCardModeProps> = ({ onGoToUpload, onGo
     );
   }
 
-  const currentPhoto: Photo | undefined = photos[currentIndex % photos.length];
-  const nextPhoto: Photo | undefined = photos[(currentIndex + 1) % photos.length];
+  // Deduplication: Only photos that have not been swiped yet by this user in this dynamic
+  const unvotedPhotos = photos.filter((p) => !hasUserVotedPhoto(p.id));
+
+  // If all photos have already been rated by the user
+  if (unvotedPhotos.length === 0) {
+    return (
+      <div className="w-full max-w-lg mx-auto px-4 py-12 text-center select-none">
+        <div className="p-8 sm:p-10 rounded-3xl bg-neutral-900/70 border border-neutral-800 shadow-2xl flex flex-col items-center">
+          <div className="w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-3xl font-black mb-4">
+            ✓
+          </div>
+          <span className="px-3.5 py-1.5 rounded-full bg-neutral-800 text-xs text-amber-400 font-semibold mb-3">
+            {activeDynamic?.title || 'Dinámica Activa'}
+          </span>
+          <h3 className="text-2xl sm:text-3xl font-extrabold text-white mb-2 tracking-tight">
+            ¡Has calificado todas las fotografías!
+          </h3>
+          <p className="text-sm text-neutral-300 font-light mb-6 leading-relaxed max-w-md">
+            Tus votos ya fueron contabilizados en la base de datos de Google Drive. Para asegurar un torneo transparente y equitativo, no se permite el swipe infinito ni votar más de una vez por la misma foto.
+          </p>
+
+          <div className="w-full p-4 rounded-2xl bg-neutral-950 mb-6 text-xs text-neutral-400 flex items-center justify-between">
+            <span>Tus calificaciones en esta dinámica:</span>
+            <span className="font-bold text-amber-400">
+              {userVotedPhotoIds.length} de {photos.length} fotos
+            </span>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
+            {onGoToUpload && (
+              <button
+                onClick={onGoToUpload}
+                className="px-6 py-3 rounded-2xl bg-amber-400 hover:bg-amber-300 text-neutral-950 font-bold text-sm transition cursor-pointer"
+              >
+                Subir nueva fotografía
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const currentPhoto: Photo = unvotedPhotos[0];
+  const nextPhoto: Photo | undefined = unvotedPhotos[1];
 
   const handleSwipeAction = (liked: boolean) => {
     if (!currentPhoto) return;
     voteSwipe(currentPhoto.id, liked);
-    setCurrentIndex((prev) => prev + 1);
     x.set(0);
   };
 
@@ -86,14 +135,14 @@ export const SwipeCardMode: React.FC<SwipeCardModeProps> = ({ onGoToUpload, onGo
           </h2>
         </div>
         <span className="px-3 py-1.5 rounded-full bg-neutral-900 text-xs font-medium text-neutral-300">
-          {(currentIndex % photos.length) + 1} de {photos.length}
+          {userVotedPhotoIds.length + 1} de {photos.length}
         </span>
       </div>
 
       {/* Swipe Stack Container */}
       <div className="relative w-full h-[520px] sm:h-[580px] flex items-center justify-center select-none">
         {/* Next card in stack (preview underneath) */}
-        {nextPhoto && photos.length > 1 && (
+        {nextPhoto && (
           <div className="absolute inset-0 rounded-3xl overflow-hidden bg-neutral-900 scale-95 opacity-50 blur-[1px] pointer-events-none">
             <img
               src={nextPhoto.imageUrl}
@@ -208,7 +257,7 @@ export const SwipeCardMode: React.FC<SwipeCardModeProps> = ({ onGoToUpload, onGo
       </div>
 
       <p className="text-xs text-neutral-500 font-light mt-4 text-center">
-        Arrastra a la derecha para sumar Puntos, a la izquierda para pasar, o utiliza los botones de acción.
+        Un solo voto por fotografía. Desliza a la derecha para Votar o a la izquierda para Pasar.
       </p>
     </div>
   );
