@@ -80,9 +80,7 @@ export function getActiveSyncProviderName(): string {
 export interface VercelDiagnostics {
   vercelEnvDetected: {
     hasSyncApiUrl: boolean;
-    hasGoogleScriptUrl: boolean;
     hasDriveFolderId: boolean;
-    hasGoogleApiKey: boolean;
     activeProvider: string;
   };
   scriptUrlConfigured: boolean;

@@ -15,14 +15,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
     return;
   }
 
-  const scriptUrl =
-    process.env.VITE_SYNC_API_URL ||
-    process.env.SYNC_API_URL ||
-    process.env.VITE_GOOGLE_SCRIPT_URL ||
-    process.env.GOOGLE_SCRIPT_URL ||
-    process.env.VITE_APPS_SCRIPT_URL ||
-    process.env.APPS_SCRIPT_URL ||
-    '';
+  const scriptUrl = process.env.VITE_SYNC_API_URL || '';
 
   const reqUrl = req.url || '';
 
@@ -33,10 +26,8 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
     res.end(
       JSON.stringify({
         vercelEnvDetected: {
-          hasSyncApiUrl: !!(process.env.VITE_SYNC_API_URL || process.env.SYNC_API_URL),
-          hasGoogleScriptUrl: !!(process.env.VITE_GOOGLE_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL),
-          hasDriveFolderId: !!(process.env.VITE_DRIVE_FOLDER_ID || process.env.DRIVE_FOLDER_ID),
-          hasGoogleApiKey: !!(process.env.VITE_GOOGLE_API_KEY || process.env.GOOGLE_API_KEY),
+          hasSyncApiUrl: !!process.env.VITE_SYNC_API_URL,
+          hasDriveFolderId: !!process.env.VITE_DRIVE_FOLDER_ID,
           activeProvider: scriptUrl
             ? 'Google Apps Script (Google Drive / Vercel)'
             : 'Memoria Local (Pendiente VITE_SYNC_API_URL)',

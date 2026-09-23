@@ -444,7 +444,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const token = await getAccessToken();
         const details = await fetchDriveFolderDetails(
           targetId,
-          APP_CONFIG.googleApiKey || undefined,
+          undefined,
           token || undefined
         );
         if (details && details.name) {
@@ -493,7 +493,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const token = await getAccessToken();
     const details = await fetchDriveFolderDetails(
       folderId,
-      APP_CONFIG.googleApiKey || undefined,
+      undefined,
       token || undefined
     );
     const folderInfo: DriveFolderInfo = {
@@ -564,7 +564,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     refreshDriveFolderMetadata(targetFolderId);
 
     const token = await getAccessToken();
-    if (!token && !APP_CONFIG.googleApiKey) {
+    if (!token) {
       throw new Error(
         'Debes vincular tu cuenta con Google Drive para leer o recargar las fotos de la carpeta. Presiona "Vincular mi Google Drive" en la parte superior.'
       );
@@ -572,7 +572,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const driveFiles = await fetchPublicFolderFiles(
       targetFolderId,
-      APP_CONFIG.googleApiKey || undefined,
+      undefined,
       token || undefined
     );
 

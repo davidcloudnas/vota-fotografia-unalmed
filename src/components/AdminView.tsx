@@ -676,20 +676,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </span>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-neutral-400">
                     <div>
-                      • URL de Script en Vercel:{' '}
-                      <span className={vercelDiag.vercelEnvDetected.hasSyncApiUrl || vercelDiag.vercelEnvDetected.hasGoogleScriptUrl ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
-                        {vercelDiag.vercelEnvDetected.hasSyncApiUrl || vercelDiag.vercelEnvDetected.hasGoogleScriptUrl
+                      • VITE_SYNC_API_URL:{' '}
+                      <span className={vercelDiag.vercelEnvDetected.hasSyncApiUrl ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+                        {vercelDiag.vercelEnvDetected.hasSyncApiUrl
                           ? '✓ Configurada en Vercel'
                           : 'No detectada en backend'}
                       </span>
                     </div>
                     <div>
-                      • Carpeta Drive en Vercel:{' '}
+                      • VITE_DRIVE_FOLDER_ID:{' '}
                       <span className={vercelDiag.vercelEnvDetected.hasDriveFolderId ? 'text-emerald-400 font-bold' : 'text-neutral-500'}>
                         {vercelDiag.vercelEnvDetected.hasDriveFolderId ? '✓ Configurada' : 'No configurada'}
                       </span>
                     </div>
-                    <div>
+                    <div className="sm:col-span-2">
                       • Proveedor activo:{' '}
                       <span className="text-white font-semibold">
                         {vercelDiag.vercelEnvDetected.activeProvider}
@@ -710,7 +710,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       type="button"
                       onClick={() => {
                         const code = `// Google Apps Script para Fotografia Unalmed
-// Guarda la base de datos completa directamente en tu Google Drive
+// Guarda la base de datos sincronizada directamente en tu Google Drive
 var DB_FILENAME = "unalmed_database.json";
 
 function doGet(e) {
@@ -721,7 +721,7 @@ function doGet(e) {
 
 function doPost(e) {
   try {
-    var contents = e.postData.contents;
+    var contents = (e && e.postData && e.postData.contents) ? e.postData.contents : "{}";
     var parsed = JSON.parse(contents);
     saveState(parsed);
     return ContentService.createTextOutput(JSON.stringify({ success: true, timestamp: Date.now() }))
@@ -732,30 +732,67 @@ function doPost(e) {
   }
 }
 
-function getSavedState() {
-  var files = DriveApp.getFilesByName(DB_FILENAME);
-  if (files.hasNext()) {
-    var file = files.next();
-    var content = file.getBlob().getDataAsString();
+// Función auxiliar para obtener el archivo rápido sin sobrecargar la búsqueda de Drive
+function getDatabaseFile() {
+  var props = PropertiesService.getScriptProperties();
+  var savedId = props.getProperty("DB_FILE_ID");
+  if (savedId) {
     try {
-      return JSON.parse(content);
-    } catch (err) {
-      return { photos: [], totalVotesCount: 0 };
+      return DriveApp.getFileById(savedId);
+    } catch(err) {
+      props.deleteProperty("DB_FILE_ID");
     }
+  }
+
+  // Búsqueda en la carpeta raíz
+  try {
+    var files = DriveApp.getRootFolder().getFilesByName(DB_FILENAME);
+    if (files.hasNext()) {
+      var f = files.next();
+      props.setProperty("DB_FILE_ID", f.getId());
+      return f;
+    }
+  } catch (e) {
+    // Si la búsqueda global falla por saturación momentánea de Google
+    console.warn("Aviso búsqueda Drive:", e);
+  }
+  return null;
+}
+
+function getSavedState() {
+  try {
+    var file = getDatabaseFile();
+    if (file) {
+      var content = file.getBlob().getDataAsString();
+      return JSON.parse(content);
+    }
+  } catch (err) {
+    console.warn("Aviso al leer estado:", err);
   }
   return { photos: [], totalVotesCount: 0 };
 }
 
 function saveState(data) {
-  var files = DriveApp.getFilesByName(DB_FILENAME);
   var jsonStr = JSON.stringify(data);
-  if (files.hasNext()) {
-    var file = files.next();
-    file.setContent(jsonStr);
-  } else {
-    // Se crea en la raíz de tu Drive la primera vez que se sincroniza
-    DriveApp.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
+  try {
+    var file = getDatabaseFile();
+    if (file) {
+      file.setContent(jsonStr);
+      return;
+    }
+    // Si no existe, lo crea en la raíz de Google Drive
+    var newFile = DriveApp.getRootFolder().createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
+    PropertiesService.getScriptProperties().setProperty("DB_FILE_ID", newFile.getId());
+  } catch (err) {
+    console.error("Error guardando estado:", err);
+    throw err;
   }
+}
+
+// Para probar permisos manualmente desde el editor de Apps Script:
+function testDrive() {
+  var state = getSavedState();
+  Logger.log("✓ Conexión con Google Drive exitosa. Estado actual: " + JSON.stringify(state));
 }`;
                         navigator.clipboard.writeText(code);
                         setScriptCopied(true);
