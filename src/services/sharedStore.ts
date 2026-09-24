@@ -222,8 +222,9 @@ function parseSharedStateData(data: unknown): SharedAppState | null {
 /**
  * Fetch latest shared votes & app state from remote store with strict 4.5s timeout
  */
-export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
+export async function fetchRemoteSharedState(forceFresh?: boolean): Promise<SharedAppState | null> {
   const syncUrl = APP_CONFIG.syncApiUrl;
+  const queryParam = forceFresh ? '?refresh=1&nocache=1' : '';
 
   // Option 1: Built-in Vercel Serverless Function `/api/sync` (handles backend Google Apps Script and bypasses browser CORS)
   try {
@@ -232,12 +233,12 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
       headers['x-sync-url'] = syncUrl;
     }
     const res = await fetchWithTimeout(
-      '/api/sync',
+      `/api/sync${queryParam}`,
       {
         method: 'GET',
         headers,
       },
-      3500
+      3800
     );
     if (res.ok) {
       const contentType = res.headers.get('content-type') || '';
@@ -254,8 +255,11 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
   // Option 2: Custom Webhook / Google Apps Script (Direct client fetch)
   if (syncUrl) {
     try {
+      const directUrl = forceFresh
+        ? (syncUrl.includes('?') ? `${syncUrl}&refresh=1` : `${syncUrl}?refresh=1`)
+        : syncUrl;
       const res = await fetchWithTimeout(
-        syncUrl,
+        directUrl,
         {
           method: 'GET',
           headers: { Accept: 'application/json' },
@@ -441,17 +445,26 @@ export function mergeAppState(
     hasChanges = true;
   }
 
-  // 3. Merge photos:
-  // If remote has an explicit photos array, remote is authoritative for the catalogue.
-  // Any photo deleted on another device will no longer be in remote.photos and will be cleanly removed locally.
-  const remotePhotosList = remote.photos || [];
-  const mergedPhotos: Photo[] = [];
+  // 3. Merge photos safely:
+  // Photos from remote and photos added locally are preserved by photo ID.
+  // Photos are ONLY removed if their ID is in allDeletedIds (explicit admin deletion).
+  const remotePhotosList = Array.isArray(remote.photos) ? remote.photos : [];
+  const photoMap = new Map<string, Photo>();
 
+  // 3.1 First, register all remote photos (filtering out tombstones)
   remotePhotosList.forEach((remotePhoto) => {
-    if (allDeletedIds.has(remotePhoto.id)) return;
-    const localPhoto = filteredLocalPhotos.find((lp) => lp.id === remotePhoto.id);
-    if (!localPhoto) {
-      mergedPhotos.push(remotePhoto);
+    if (!remotePhoto || !remotePhoto.id || allDeletedIds.has(remotePhoto.id)) return;
+    photoMap.set(remotePhoto.id, { ...remotePhoto });
+  });
+
+  // 3.2 Second, merge all locally known photos
+  filteredLocalPhotos.forEach((localPhoto) => {
+    if (!localPhoto || !localPhoto.id || allDeletedIds.has(localPhoto.id)) return;
+    const remotePhoto = photoMap.get(localPhoto.id);
+
+    if (!remotePhoto) {
+      // Photo exists locally (e.g. newly uploaded by this user, not yet processed by remote): PRESERVE IT!
+      photoMap.set(localPhoto.id, localPhoto);
       hasChanges = true;
       return;
     }
@@ -473,11 +486,11 @@ export function mergeAppState(
       }
     });
 
-    const higherPoints = Math.max(localPhoto.points, remotePhoto.points);
-    const higherMatches = Math.max(localPhoto.matchesPlayed, remotePhoto.matchesPlayed);
-    const higherWins = Math.max(localPhoto.matchesWon, remotePhoto.matchesWon);
-    const higherSwipeLikes = Math.max(localPhoto.swipeLikes, remotePhoto.swipeLikes);
-    const higherSwipePasses = Math.max(localPhoto.swipePasses, remotePhoto.swipePasses);
+    const higherPoints = Math.max(localPhoto.points || 0, remotePhoto.points || 0);
+    const higherMatches = Math.max(localPhoto.matchesPlayed || 0, remotePhoto.matchesPlayed || 0);
+    const higherWins = Math.max(localPhoto.matchesWon || 0, remotePhoto.matchesWon || 0);
+    const higherSwipeLikes = Math.max(localPhoto.swipeLikes || 0, remotePhoto.swipeLikes || 0);
+    const higherSwipePasses = Math.max(localPhoto.swipePasses || 0, remotePhoto.swipePasses || 0);
 
     if (
       higherPoints !== localPhoto.points ||
@@ -488,8 +501,12 @@ export function mergeAppState(
       hasChanges = true;
     }
 
-    mergedPhotos.push({
+    photoMap.set(localPhoto.id, {
       ...remotePhoto,
+      title: remotePhoto.title || localPhoto.title,
+      author: remotePhoto.author || localPhoto.author,
+      location: remotePhoto.location || localPhoto.location,
+      description: remotePhoto.description || localPhoto.description,
       imageUrl: remotePhoto.imageUrl || localPhoto.imageUrl,
       points: higherPoints,
       matchesPlayed: higherMatches,
@@ -503,10 +520,8 @@ export function mergeAppState(
     });
   });
 
-  // If remote is pristine/brand new (never had any sync), allow keeping local photos
-  if (!remote.updatedAt && mergedPhotos.length === 0 && filteredLocalPhotos.length > 0) {
-    mergedPhotos.push(...filteredLocalPhotos);
-  } else if (filteredLocalPhotos.length !== mergedPhotos.length) {
+  const mergedPhotos = Array.from(photoMap.values());
+  if (filteredLocalPhotos.length !== mergedPhotos.length) {
     hasChanges = true;
   }
 

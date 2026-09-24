@@ -748,11 +748,26 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsGlobalUpdating(true, 'Guardando cambios y estadísticas en Google Drive...');
     setIsSyncingGlobalVotes(true);
     try {
+      // Safety guard: if local photos are empty, try fetching remote first to avoid wiping out Drive database
+      let finalPhotos = photos;
+      let finalVotes = totalVotesCount;
+      if (finalPhotos.length === 0) {
+        try {
+          const remote = await fetchRemoteSharedState(true);
+          if (remote && Array.isArray(remote.photos) && remote.photos.length > 0) {
+            finalPhotos = remote.photos;
+            finalVotes = Math.max(finalVotes, remote.totalVotesCount || 0);
+            setPhotos(finalPhotos);
+            setTotalVotesCount(finalVotes);
+          }
+        } catch {}
+      }
+
       const pushPromise = pushRemoteSharedState({
         version: 2,
         updatedAt: Date.now(),
-        totalVotesCount,
-        photos,
+        totalVotesCount: finalVotes,
+        photos: finalPhotos,
         activeDynamic,
         dynamics,
         deletedPhotoIds,
@@ -800,7 +815,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     hasPendingPushRef.current = true;
 
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    setIsGlobalUpdating(true, 'Guardando tu voto y sincronizando posiciones...');
+    setIsSyncingGlobalVotes(true);
     syncTimeoutRef.current = setTimeout(async () => {
       try {
         await pushRemoteSharedState({
@@ -817,10 +832,10 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } catch (err) {
         console.warn('Error guardando votos compartidos:', err);
       } finally {
-        setIsGlobalUpdating(false);
+        setIsSyncingGlobalVotes(false);
       }
-    }, 400);
-  }, [photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds, setIsGlobalUpdating]);
+    }, 350);
+  }, [photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds]);
 
   // Prevent losing votes if user refreshes or closes the page immediately after voting
   useEffect(() => {
@@ -1375,29 +1390,36 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsGlobalUpdating(true, 'Actualizando fotos, votos y clasificaciones desde Google Drive...');
     setIsSyncingGlobalVotes(true);
     try {
-      const remote = await fetchRemoteSharedState();
-      if (remote && Array.isArray(remote.photos)) {
+      const remote = await fetchRemoteSharedState(true);
+      if (remote && Array.isArray(remote.photos) && remote.photos.length > 0) {
         const deletedSet = new Set(remote.deletedPhotoIds || []);
-        const cleanPhotos = remote.photos.filter((p) => !deletedSet.has(p.id));
+        const cleanRemotePhotos = remote.photos.filter((p) => !deletedSet.has(p.id));
 
-        setPhotos(cleanPhotos);
-        setTotalVotesCount(typeof remote.totalVotesCount === 'number' ? remote.totalVotesCount : 0);
+        setPhotos((prev) => {
+          const photoMap = new Map<string, Photo>();
+          cleanRemotePhotos.forEach((p) => photoMap.set(p.id, p));
+          // Keep existing local photos unless deleted
+          prev.forEach((lp) => {
+            if (!deletedSet.has(lp.id) && !photoMap.has(lp.id)) {
+              photoMap.set(lp.id, lp);
+            }
+          });
+          const merged = Array.from(photoMap.values());
+          latestStateRef.current.photos = merged;
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+          } catch {}
+          return merged;
+        });
+
+        const newVotes = typeof remote.totalVotesCount === 'number' ? Math.max(totalVotesCount, remote.totalVotesCount) : totalVotesCount;
+        setTotalVotesCount(newVotes);
         setActiveDynamic(remote.activeDynamic || null);
         setDynamics(remote.dynamics || []);
         setDeletedPhotoIds(remote.deletedPhotoIds || []);
-        setActiveDuel(cleanPhotos.length >= 2 ? getRandomPair(cleanPhotos) : null);
-
-        latestStateRef.current = {
-          photos: cleanPhotos,
-          totalVotesCount: remote.totalVotesCount,
-          activeDynamic: remote.activeDynamic || null,
-          dynamics: remote.dynamics || [],
-          deletedPhotoIds: remote.deletedPhotoIds || [],
-        };
 
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanPhotos));
-          localStorage.setItem(VOTES_COUNTER_KEY, String(remote.totalVotesCount));
+          localStorage.setItem(VOTES_COUNTER_KEY, String(newVotes));
           if (remote.activeDynamic) {
             localStorage.setItem(ACTIVE_DYNAMIC_KEY, JSON.stringify(remote.activeDynamic));
           } else {
@@ -1411,7 +1433,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           loadPhotosFromDrive().catch(() => {});
         }
 
-        setUserNotice('✓ ¡Todo actualizado: fotos, puntajes, dinámicas y tiempos desde Google Drive!');
+        setUserNotice(`✓ ¡Todo actualizado: ${cleanRemotePhotos.length} fotos recuperadas desde Google Drive!`);
       } else {
         await syncGlobalVotes();
         if (driveFolder?.folderId) {

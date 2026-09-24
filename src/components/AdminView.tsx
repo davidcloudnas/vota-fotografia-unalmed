@@ -517,6 +517,27 @@ export const AdminView: React.FC<AdminViewProps> = ({
               <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   type="button"
+                  onClick={async () => {
+                    setSyncGlobalStatusMsg('');
+                    setIsPublishingLocal(true);
+                    try {
+                      await refreshFromCloud();
+                      setSyncGlobalStatusMsg('✓ ¡Fotos, votos y clasificaciones cargadas y recuperadas desde Google Drive!');
+                    } catch {
+                      setSyncGlobalStatusMsg('Aviso: No se pudo conectar a Google Drive. Revisa tu URL de sincronización.');
+                    } finally {
+                      setIsPublishingLocal(false);
+                    }
+                  }}
+                  disabled={isPublishingLocal || isSyncingGlobalVotes}
+                  className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold transition cursor-pointer flex items-center gap-1.5 border border-neutral-700"
+                  title="Descarga todas las fotos, votos y datos guardados en Google Drive hacia la aplicación"
+                >
+                  🔄 Cargar / Recuperar Fotos de Drive
+                </button>
+
+                <button
+                  type="button"
                   onClick={handleDownloadAuditJson}
                   className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
                   title="Descarga un archivo JSON con todos los votos, fotos, IDs, comentarios y dinámicas tal como deben estar en Google Drive"
@@ -741,23 +762,26 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       type="button"
                       onClick={() => {
                         const code = `// =========================================================================================
-// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 3.0 ULTRA-RÁPIDA)
+// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 4.0 CON ESCANEO DIRECTO DE CARPETA)
 // =========================================================================================
 // 1. CARPETA DE GOOGLE DRIVE:
 // Especifica aquí el ID de la carpeta pública de Google Drive donde están las fotos.
-// La base de datos (unalmed_database.json) se guardará DIRECTAMENTE DENTRO de esta carpeta.
-var FOLDER_ID = "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"; // Pega aquí el mismo ID de VITE_DRIVE_FOLDER_ID
+// El script:
+// a) Guarda la base de datos (unalmed_database.json) dentro de esta carpeta.
+// b) Escanea automáticamente todas las imágenes (.jpg, .png, .webp) que subas a esta carpeta y las añade al catálogo.
+// c) NUNCA borra fotos de Drive aunque un cliente sincronice con lista vacía (fusión segura).
+var FOLDER_ID = "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"; // Pega aquí el ID de tu carpeta de Google Drive
 var DB_FILENAME = "unalmed_database.json";
 
-// In-Memory RAM Cache Key (responde en menos de 50ms)
-var CACHE_KEY = "UNALMED_GLOBAL_STATE_V3";
+// In-Memory RAM Cache Key (máximo 45 segundos para que los cambios se reflejen de inmediato)
+var CACHE_KEY = "UNALMED_GLOBAL_STATE_V4";
 
 function doGet(e) {
   var isPing = e && e.parameter && (e.parameter.ping === "1" || e.parameter.test === "1");
+  var isForceRefresh = e && e.parameter && (e.parameter.refresh === "1" || e.parameter.nocache === "1");
   
-  // 1. Lectura ultrarrápida desde la memoria RAM (CacheService)
   var cache = CacheService.getScriptCache();
-  var cached = cache.get(CACHE_KEY);
+  var cached = isForceRefresh ? null : cache.get(CACHE_KEY);
   var state = null;
   
   if (cached) {
@@ -766,11 +790,11 @@ function doGet(e) {
     } catch(err) {}
   }
   
-  // Si no estaba en RAM, lee de Google Drive y llena la memoria RAM
+  // Si no estaba en RAM o se forzó refresco, lee de Google Drive
   if (!state) {
     state = getSavedStateFromDrive();
     try {
-      cache.put(CACHE_KEY, JSON.stringify(state), 21600); // 6 horas en caché RAM
+      cache.put(CACHE_KEY, JSON.stringify(state), 45); // 45 segundos en caché RAM
     } catch(err) {}
   }
 
@@ -793,18 +817,17 @@ function doGet(e) {
 }
 
 function doPost(e) {
-  // LockService evita cuellos de botella: si varios usuarios votan a la vez, no se bloquean 1 minuto
   var lock = LockService.getScriptLock();
-  var hasLock = lock.tryLock(4000); // Máximo 4 segundos de espera
+  var hasLock = lock.tryLock(4000); // Espera máxima de 4s para evitar cuellos de botella
   
   try {
     var contents = (e && e.postData && e.postData.contents) ? e.postData.contents : "{}";
     var parsed = JSON.parse(contents);
     var result = saveState(parsed);
     
-    // Actualizar inmediatamente la memoria RAM para que el siguiente doGet sea instantáneo
+    // Invalida e inserta en caché inmediatamente
     try {
-      CacheService.getScriptCache().put(CACHE_KEY, JSON.stringify(result), 21600);
+      CacheService.getScriptCache().put(CACHE_KEY, JSON.stringify(result), 45);
     } catch(err) {}
 
     return ContentService.createTextOutput(JSON.stringify({
@@ -824,61 +847,159 @@ function doPost(e) {
   }
 }
 
-// Obtiene la carpeta de fotos de forma directa sin búsquedas lentas
 function getTargetFolder() {
   if (FOLDER_ID && FOLDER_ID !== "ID_DE_TU_CARPETA_DE_DRIVE_AQUI") {
     try {
       return DriveApp.getFolderById(FOLDER_ID.trim());
     } catch(err) {
-      console.warn("No se pudo abrir la carpeta por FOLDER_ID:", err);
+      console.warn("No se pudo abrir carpeta por FOLDER_ID:", err);
     }
   }
   return DriveApp.getRootFolder();
 }
 
 function getDatabaseFile() {
-  var props = PropertiesService.getScriptProperties();
-  var savedId = props.getProperty("DB_FILE_ID");
-  if (savedId) {
-    try {
-      return DriveApp.getFileById(savedId);
-    } catch(err) {
-      props.deleteProperty("DB_FILE_ID");
-    }
-  }
-
-  // Búsqueda directa y rápida en la carpeta de fotos
+  var folder = getTargetFolder();
+  
+  // 1. Buscar en la carpeta configurada
   try {
-    var folder = getTargetFolder();
     var files = folder.getFilesByName(DB_FILENAME);
     if (files.hasNext()) {
-      var f = files.next();
-      props.setProperty("DB_FILE_ID", f.getId());
-      return f;
+      return files.next();
     }
-  } catch(e) {
-    console.warn("Aviso búsqueda archivo:", e);
-  }
+  } catch(e) {}
+
+  // 2. Buscar en el root si no estaba en la carpeta
+  try {
+    var rootFiles = DriveApp.getRootFolder().getFilesByName(DB_FILENAME);
+    if (rootFiles.hasNext()) {
+      return rootFiles.next();
+    }
+  } catch(e) {}
+
   return null;
 }
 
-function getSavedStateFromDrive() {
+// Escanea archivos de imagen (.jpg, .png, .webp) directamente de la carpeta de Drive
+function scanDriveFolderImages(folder, existingMap, deletedMap) {
+  var newPhotos = [];
   try {
-    var file = getDatabaseFile();
-    if (file) {
-      var content = file.getBlob().getDataAsString();
-      return JSON.parse(content);
+    var allowedTypes = [
+      MimeType.JPEG,
+      MimeType.PNG,
+      MimeType.GIF,
+      "image/webp",
+      "image/jpeg",
+      "image/png"
+    ];
+    for (var t = 0; t < allowedTypes.length; t++) {
+      var files = folder.getFilesByType(allowedTypes[t]);
+      while (files.hasNext()) {
+        var file = files.next();
+        var fid = file.getId();
+        var pId = "drive-" + fid;
+        
+        // Si ya fue eliminada por admin o ya está registrada, omitir
+        if (deletedMap[fid] || deletedMap[pId] || existingMap[pId] || existingMap[fid]) {
+          continue;
+        }
+
+        var cleanName = file.getName().replace(/\\.[^/.]+$/, "").replace(/_/g, " ");
+        var photoObj = {
+          id: pId,
+          title: cleanName || "Fotografía Campus Unalmed",
+          author: "Comunidad Unalmed",
+          location: "Medellín",
+          description: "Fotografía sincronizada desde la carpeta de Google Drive.",
+          imageUrl: "https://lh3.googleusercontent.com/d/" + fid + "=s1600",
+          driveFileId: fid,
+          driveWebViewLink: file.getUrl(),
+          points: 1200,
+          matchesPlayed: 0,
+          matchesWon: 0,
+          swipeLikes: 0,
+          swipePasses: 0,
+          comments: [],
+          isFavorite: false,
+          syncedToDrive: true,
+          createdAt: "Hoy"
+        };
+        newPhotos.push(photoObj);
+        existingMap[pId] = photoObj;
+      }
     }
-  } catch (err) {
-    console.warn("Aviso al leer estado:", err);
+  } catch(err) {
+    console.warn("Aviso escaneando imágenes de la carpeta:", err);
   }
-  return { version: 2, photos: [], totalVotesCount: 0, deletedPhotoIds: [], devices: {} };
+  return newPhotos;
+}
+
+function getSavedStateFromDrive() {
+  var state = { version: 2, photos: [], totalVotesCount: 0, deletedPhotoIds: [], devices: {} };
+  var file = getDatabaseFile();
+
+  if (file) {
+    try {
+      var content = file.getBlob().getDataAsString();
+      if (content && content.trim().length > 0) {
+        var parsed = JSON.parse(content);
+        if (parsed && typeof parsed === "object") {
+          state = parsed;
+          if (!Array.isArray(state.photos)) state.photos = [];
+          if (!Array.isArray(state.deletedPhotoIds)) state.deletedPhotoIds = [];
+        }
+      }
+    } catch (err) {
+      console.warn("Aviso al leer archivo de base de datos:", err);
+    }
+  }
+
+  // Mapa de fotos existentes y eliminadas
+  var deletedMap = {};
+  var delArr = state.deletedPhotoIds || [];
+  for (var d = 0; d < delArr.length; d++) {
+    deletedMap[delArr[d]] = true;
+  }
+
+  var existingMap = {};
+  var cleanPhotos = [];
+  var existingPhotos = state.photos || [];
+  for (var p = 0; p < existingPhotos.length; p++) {
+    var item = existingPhotos[p];
+    if (item && item.id && !deletedMap[item.id]) {
+      existingMap[item.id] = item;
+      if (item.driveFileId) existingMap[item.driveFileId] = item;
+      cleanPhotos.push(item);
+    }
+  }
+  state.photos = cleanPhotos;
+
+  // Escaneo automático de la carpeta de Drive para detectar fotos añadidas directamente
+  if (FOLDER_ID && FOLDER_ID !== "ID_DE_TU_CARPETA_DE_DRIVE_AQUI") {
+    try {
+      var folder = getTargetFolder();
+      var discovered = scanDriveFolderImages(folder, existingMap, deletedMap);
+      if (discovered.length > 0) {
+        state.photos = state.photos.concat(discovered);
+        var updatedJson = JSON.stringify(state, null, 2);
+        if (file) {
+          file.setContent(updatedJson);
+        } else {
+          folder.createFile(DB_FILENAME, updatedJson, MimeType.PLAIN_TEXT);
+        }
+      }
+    } catch(err) {
+      console.warn("Aviso escaneando carpeta:", err);
+    }
+  }
+
+  return state;
 }
 
 function saveState(data) {
   var existing = getSavedStateFromDrive();
 
-  // 1. Unir IDs de fotos eliminadas (lista negra permanente para que NUNCA vuelvan a aparecer)
+  // 1. Unir IDs de fotos eliminadas (lista negra permanente)
   var deletedMap = {};
   var existingDeleted = existing.deletedPhotoIds || [];
   for (var d1 = 0; d1 < existingDeleted.length; d1++) {
@@ -893,14 +1014,52 @@ function saveState(data) {
   }
   var allDeletedIds = Object.keys(deletedMap);
 
-  // 2. Filtrar fotos: NINGUNA foto eliminada debe guardarse o aparecer
-  var incomingPhotos = Array.isArray(data.photos) ? data.photos : (existing.photos || []);
-  var finalPhotos = [];
-  for (var i = 0; i < incomingPhotos.length; i++) {
-    var p = incomingPhotos[i];
-    if (p && p.id && !deletedMap[p.id] && !p.isDeleted) {
-      finalPhotos.push(p);
+  // 2. FUSIÓN SEGURA DE FOTOGRAFÍAS:
+  // NUNCA sobreescribir la base de datos con un arreglo vacío.
+  // Conservar todas las fotos existentes en Drive y combinarlas con las que envíe el cliente.
+  var photoMap = {};
+  var existingPhotos = existing.photos || [];
+  for (var ep = 0; ep < existingPhotos.length; ep++) {
+    var p = existingPhotos[ep];
+    if (p && p.id && !deletedMap[p.id]) {
+      photoMap[p.id] = p;
     }
+  }
+
+  var incomingPhotos = Array.isArray(data.photos) ? data.photos : [];
+  for (var ip = 0; ip < incomingPhotos.length; ip++) {
+    var inc = incomingPhotos[ip];
+    if (inc && inc.id && !deletedMap[inc.id]) {
+      if (!photoMap[inc.id]) {
+        photoMap[inc.id] = inc;
+      } else {
+        var cur = photoMap[inc.id];
+        photoMap[inc.id] = {
+          id: inc.id,
+          title: inc.title || cur.title,
+          author: inc.author || cur.author,
+          location: inc.location || cur.location,
+          description: inc.description || cur.description,
+          imageUrl: inc.imageUrl || cur.imageUrl,
+          driveFileId: inc.driveFileId || cur.driveFileId,
+          driveWebViewLink: inc.driveWebViewLink || cur.driveWebViewLink,
+          syncedToDrive: inc.syncedToDrive || cur.syncedToDrive,
+          points: Math.max(cur.points || 1200, inc.points || 1200),
+          matchesPlayed: Math.max(cur.matchesPlayed || 0, inc.matchesPlayed || 0),
+          matchesWon: Math.max(cur.matchesWon || 0, inc.matchesWon || 0),
+          swipeLikes: Math.max(cur.swipeLikes || 0, inc.swipeLikes || 0),
+          swipePasses: Math.max(cur.swipePasses || 0, inc.swipePasses || 0),
+          comments: (cur.comments && cur.comments.length >= (inc.comments || []).length) ? cur.comments : (inc.comments || []),
+          createdAt: cur.createdAt || inc.createdAt || "Hoy"
+        };
+      }
+    }
+  }
+
+  var finalPhotos = [];
+  var allKeys = Object.keys(photoMap);
+  for (var k = 0; k < allKeys.length; k++) {
+    finalPhotos.push(photoMap[allKeys[k]]);
   }
 
   // 3. Votos totales acumulados
@@ -917,7 +1076,7 @@ function saveState(data) {
 
   // 5. Dinámicas
   var activeDyn = data.activeDynamic !== undefined ? data.activeDynamic : existing.activeDynamic;
-  var dynamics = Array.isArray(data.dynamics) ? data.dynamics : (existing.dynamics || []);
+  var dynamics = Array.isArray(data.dynamics) && data.dynamics.length > 0 ? data.dynamics : (existing.dynamics || []);
 
   var finalState = {
     version: 2,
@@ -936,8 +1095,7 @@ function saveState(data) {
     file.setContent(jsonStr);
   } else {
     var folder = getTargetFolder();
-    var newFile = folder.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
-    PropertiesService.getScriptProperties().setProperty("DB_FILE_ID", newFile.getId());
+    folder.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
   }
   return finalState;
 }
@@ -950,10 +1108,12 @@ function testDrive() {
   Logger.log("✓ Google Drive conectado correctamente!");
   Logger.log("✓ Carpeta seleccionada: " + folder.getName() + " (ID: " + folder.getId() + ")");
   if (file) {
-    Logger.log("✓ Archivo de base de datos dentro de la carpeta: " + file.getName() + " (ID: " + file.getId() + ")");
-    Logger.log("✓ Enlace directo: " + file.getUrl());
+    Logger.log("✓ Archivo unalmed_database.json encontrado dentro de la carpeta: " + file.getName());
+    Logger.log("✓ Enlace directo a la base de datos: " + file.getUrl());
+  } else {
+    Logger.log("Aviso: Aún no existe unalmed_database.json, se creará al guardar.");
   }
-  Logger.log("✓ Total de fotos activas: " + (state.photos || []).length);
+  Logger.log("✓ Total de fotos activas en el catálogo: " + (state.photos || []).length);
   Logger.log("✓ Total de votos globales: " + (state.totalVotesCount || 0));
   Logger.log("✓ Fotos eliminadas en lista negra: " + (state.deletedPhotoIds || []).length);
   Logger.log("✓ Dispositivos registrados: " + Object.keys(state.devices || {}).length);
@@ -1014,16 +1174,16 @@ function testDrive() {
                         </span>
                         <ul className="list-disc pl-3.5 space-y-1 text-neutral-400">
                           <li>
-                            <strong>¿Por qué tardaba 1 minuto?</strong> Google Drive realizaba una búsqueda lenta en todo tu disco y se acumulaban bloqueos simultáneos. Con <code>CacheService</code> (memoria RAM) y <code>LockService</code>, ahora responde en <strong>milisegundos</strong>.
+                            <strong>¿Por qué antes no se mencionaba la carpeta de fotos?</strong> Anteriormente, el script solo guardaba un archivo <code>unalmed_database.json</code> y no leía los archivos de imagen (.jpg, .png) sueltos dentro de la carpeta. En esta <strong>Versión 4.0</strong>, el script escanea automáticamente tu carpeta de Google Drive (<code>FOLDER_ID</code>) y registra cualquier foto que subas allí.
                           </li>
                           <li>
-                            <strong>¿Por qué antes no se mencionaba la carpeta?</strong> Antes el script guardaba en la raíz para facilitar la prueba inicial. Ahora se incluye <code>FOLDER_ID</code> arriba para guardar <code>unalmed_database.json</code> dentro de tu misma carpeta de fotos.
+                            <strong>¿Por qué al forzar sincronización cambió el archivo en Drive?</strong> Si la app en tu navegador no tenía fotos cargadas en memoria y pulsabas "Forzar sincronización", el script anterior reemplazaba el archivo completo con la lista vacía. Ahora, con la <strong>fusión segura</strong>, el script NUNCA borra fotos de Drive aunque el cliente sincronice con 0 fotos; siempre combina y preserva el catálogo existente.
                           </li>
                           <li>
-                            <strong>ID por dispositivo:</strong> A cada celular se le asigna un <code>deviceId</code> único para registrar emparejamientos y evitar votos duplicados.
+                            <strong>¿Cómo recuperar fotos si se cambió el archivo?</strong> En Google Drive, haz clic derecho sobre <code>unalmed_database.json</code> &gt; <em>Información del archivo &gt; Historial de versiones</em>. Puedes restaurar la versión anterior con 1 clic. Además, el botón <strong>"🔄 Cargar / Recuperar Fotos de Drive"</strong> arriba vuelve a indexar las imágenes de tu carpeta.
                           </li>
                           <li>
-                            <strong>Lista negra de fotos eliminadas:</strong> Al borrar una foto, se registra en <code>deletedPhotoIds</code> en Drive para que nadie pueda volver a verla.
+                            <strong>¿Por qué tardaba 1 minuto?</strong> Google Drive realizaba búsquedas lentas en todo el disco. Ahora con <code>FOLDER_ID</code> directo y <code>LockService</code>, responde en menos de 1 segundo.
                           </li>
                         </ul>
                       </div>

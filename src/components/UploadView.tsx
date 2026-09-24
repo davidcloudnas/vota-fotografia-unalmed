@@ -20,6 +20,7 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
   const [location, setLocation] = useState('');
   const [description, setDescription] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [formError, setFormError] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewError, setPreviewError] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -36,8 +37,9 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
   };
 
   const processFile = async (file: File) => {
+    setFormError('');
     if (!file.type.startsWith('image/')) {
-      alert('Por favor selecciona un archivo de imagen válido (JPG, PNG, WebP).');
+      setFormError('Por favor selecciona un archivo de imagen válido (JPG, PNG, WebP).');
       return;
     }
 
@@ -84,12 +86,14 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError('');
+
     if (!imageUrl.trim()) {
-      alert('Por favor añade una fotografía para publicar.');
+      setFormError('Por favor selecciona o sube una fotografía para publicar.');
       return;
     }
     if (!title.trim()) {
-      alert('Por favor indica un título para la fotografía.');
+      setFormError('Por favor indica un título para la fotografía.');
       return;
     }
 
@@ -97,52 +101,56 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
     let finalImageUrl = imageUrl;
     let driveFileId: string | undefined = undefined;
     let driveWebViewLink: string | undefined = undefined;
-    let syncedToDrive = false;
 
-    // Check if the admin drive is active and can accept background upload
     try {
-      let uploadBlob: Blob | null = null;
-      const fileName = (selectedFile?.name || `${title.replace(/\s+/g, '_')}_${Date.now()}.jpg`);
+      // Check if the admin drive is active and can accept background upload
+      try {
+        let uploadBlob: Blob | null = null;
+        const fileName = (selectedFile?.name || `${title.replace(/\s+/g, '_')}_${Date.now()}.jpg`);
 
-      if (selectedFile) {
-        uploadBlob = selectedFile;
-      } else if (imageUrl.startsWith('data:')) {
-        const res = await fetch(imageUrl);
-        uploadBlob = await res.blob();
-      }
-
-      if (uploadBlob) {
-        setUploadStatusMsg('Procesando fotografía y guardando en la galería...');
-        // uploadFileToDriveFolder only uploads if admin token is active; otherwise returns null without asking students
-        const driveUploaded = await uploadFileToDriveFolder(uploadBlob, fileName);
-        if (driveUploaded) {
-          driveFileId = driveUploaded.fileId;
-          driveWebViewLink = driveUploaded.webViewLink;
-          finalImageUrl = driveUploaded.directImageUrl;
-          syncedToDrive = true;
-          setUploadStatusMsg('¡Fotografía alojada en la carpeta pública de Google Drive!');
+        if (selectedFile) {
+          uploadBlob = selectedFile;
+        } else if (imageUrl.startsWith('data:')) {
+          const res = await fetch(imageUrl);
+          uploadBlob = await res.blob();
         }
+
+        if (uploadBlob) {
+          setUploadStatusMsg('Procesando fotografía y guardando en la galería...');
+          // uploadFileToDriveFolder only uploads if admin token is active; otherwise returns null without asking students
+          const driveUploaded = await uploadFileToDriveFolder(uploadBlob, fileName);
+          if (driveUploaded) {
+            driveFileId = driveUploaded.fileId;
+            driveWebViewLink = driveUploaded.webViewLink;
+            finalImageUrl = driveUploaded.directImageUrl;
+            setUploadStatusMsg('¡Fotografía alojada en la carpeta pública de Google Drive!');
+          }
+        }
+      } catch (err) {
+        console.warn('Subida directa a Drive omitida:', err);
       }
+
+      // Save photo to community database
+      uploadPhoto({
+        title,
+        author: author.trim() || 'Comunidad Unalmed',
+        location: location.trim() || 'Medellín',
+        imageUrl: finalImageUrl,
+        description,
+        driveFileId,
+        driveWebViewLink,
+      });
+
+      setUploadStatusMsg('¡Fotografía publicada exitosamente para toda la comunidad!');
+
+      setTimeout(() => {
+        onUploaded('gallery');
+      }, 700);
     } catch (err) {
-      console.warn('Subida directa a Drive omitida:', err);
+      console.error('Error al enviar la fotografía:', err);
+      setFormError('Hubo un inconveniente al guardar la foto. Intenta de nuevo.');
+      setIsSubmitting(false);
     }
-
-    // Save photo to community database
-    uploadPhoto({
-      title,
-      author: author.trim() || 'Comunidad Unalmed',
-      location: location.trim() || 'Medellín',
-      imageUrl: finalImageUrl,
-      description,
-      driveFileId,
-      driveWebViewLink,
-    });
-
-    setUploadStatusMsg('¡Fotografía publicada exitosamente para toda la comunidad!');
-
-    setTimeout(() => {
-      onUploaded('gallery');
-    }, 1000);
   };
 
   return (
@@ -307,8 +315,15 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
           </div>
         </div>
 
+        {formError && (
+          <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold flex items-center gap-2">
+            <span>⚠️</span>
+            <span>{formError}</span>
+          </div>
+        )}
+
         {uploadStatusMsg && (
-          <div className="p-4 rounded-2xl bg-neutral-900 text-amber-400 text-xs font-semibold">
+          <div className="p-4 rounded-2xl bg-neutral-900 border border-amber-400/20 text-amber-400 text-xs font-semibold">
             {uploadStatusMsg}
           </div>
         )}

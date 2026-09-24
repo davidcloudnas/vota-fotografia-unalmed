@@ -92,7 +92,12 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
   if (req.method === 'GET') {
     if (scriptUrl) {
       try {
-        const response = await fetch(scriptUrl, {
+        const isForceRefresh = reqUrl.includes('refresh') || reqUrl.includes('nocache');
+        const targetFetchUrl = isForceRefresh
+          ? (scriptUrl.includes('?') ? `${scriptUrl}&refresh=1&nocache=1` : `${scriptUrl}?refresh=1&nocache=1`)
+          : scriptUrl;
+
+        const response = await fetch(targetFetchUrl, {
           method: 'GET',
           headers: { Accept: 'application/json' },
           redirect: 'follow',
