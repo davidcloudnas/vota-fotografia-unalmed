@@ -607,8 +607,44 @@ export function mergeAppState(
     });
   });
 
-  const mergedPhotos = Array.from(photoMap.values());
-  if (filteredLocalPhotos.length !== mergedPhotos.length) {
+  const rawPhotos = Array.from(photoMap.values());
+  const driveIdMap = new Map<string, Photo>();
+  const userPhotoIdMap = new Map<string, Photo>();
+
+  // 1st pass: index canonical user photos
+  rawPhotos.forEach((p) => {
+    if (!p.id.startsWith('drive-')) {
+      if (p.driveFileId) driveIdMap.set(p.driveFileId, p);
+      userPhotoIdMap.set(p.id, p);
+    }
+  });
+
+  // 2nd pass: filter out drive- duplicates (e.g. "si unal-user-1790276649301" vs "si")
+  const mergedPhotos: Photo[] = [];
+  rawPhotos.forEach((p) => {
+    if (p.id.startsWith('drive-')) {
+      const fid = p.driveFileId || p.id.replace('drive-', '');
+      const match = p.title.match(/(unal-user-\d+)/);
+      const canonicalByTitle = match ? userPhotoIdMap.get(match[1]) : null;
+      const canonicalByDrive = driveIdMap.get(fid);
+
+      const canonical = canonicalByTitle || canonicalByDrive;
+      if (canonical && canonical.id !== p.id) {
+        // Merge stats into canonical photo if higher
+        canonical.points = Math.max(canonical.points || 1200, p.points || 1200);
+        canonical.matchesPlayed = Math.max(canonical.matchesPlayed || 0, p.matchesPlayed || 0);
+        canonical.matchesWon = Math.max(canonical.matchesWon || 0, p.matchesWon || 0);
+        canonical.swipeLikes = Math.max(canonical.swipeLikes || 0, p.swipeLikes || 0);
+        canonical.swipePasses = Math.max(canonical.swipePasses || 0, p.swipePasses || 0);
+        if (!canonical.driveFileId) canonical.driveFileId = fid;
+        hasChanges = true;
+        return; // Exclude duplicate from catalog!
+      }
+    }
+    mergedPhotos.push(p);
+  });
+
+  if (filteredLocalPhotos.length !== mergedPhotos.length || rawPhotos.length !== mergedPhotos.length) {
     hasChanges = true;
   }
 

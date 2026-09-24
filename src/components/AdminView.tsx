@@ -771,21 +771,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       type="button"
                       onClick={() => {
                         const code = `// =========================================================================================
-// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 5.0 - MURO TEMPORAL Y ANTI-DUPLICACIÓN)
+// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 5.1 - ANTI-DUPLICACIÓN EXACTA DE DRIVE)
 // =========================================================================================
-// CARACTERÍSTICAS DE LA VERSIÓN 5.0:
-// 1. Muro Temporal Inmutable (lastPurgeTimestamp): Si el administrador purga la base de datos a 0,
-//    ningún teléfono desfasado puede resucitar fotos viejas ni dinámicas anteriores a esa fecha.
-// 2. Anti-Duplicación Estricta en Drive (Fin a las 5 copias): Antes de crear un archivo en la carpeta,
-//    verifica si ya existe por nombre de foto. Si existe, reutiliza el enlace evitando copias redundantes.
-// 3. Listas Negras Permanentes: deletedPhotoIds y deletedDynamicIds se preservan y protegen permanentemente.
-// 4. Depuración Automática de Teléfonos: Al consultar el script (doGet), los teléfonos reciben sólo datos válidos.
+// CARACTERÍSTICAS DE LA VERSIÓN 5.1:
+// 1. Detección Inteligente de Nombres: Si un archivo tiene formato <titulo>_<unal-user-XXXXX>,
+//    el script lo vincula a la foto canónica en vez de duplicarla con el nombre feo en la galería.
+// 2. Filtro Anti-Duplicados Activo: Purga en tiempo real cualquier foto redundante de Drive.
+// 3. Muro Temporal Inmutable (lastPurgeTimestamp): Impide resurrección de fotos de teléfonos viejos.
+// 4. Fin a las copias múltiples en Drive (reutilización de archivos).
 
 var FOLDER_ID = "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"; // Pega aquí el ID de tu carpeta de Google Drive
 var DB_FILENAME = "unalmed_database.json";
 
 // In-Memory RAM Cache Key (máximo 45 segundos para que los cambios se reflejen de inmediato)
-var CACHE_KEY = "UNALMED_GLOBAL_STATE_V5";
+var CACHE_KEY = "UNALMED_GLOBAL_STATE_V5_1";
 
 function doGet(e) {
   var isPing = e && e.parameter && (e.parameter.ping === "1" || e.parameter.test === "1");
@@ -949,7 +948,52 @@ function scanDriveFolderImages(folder, existingMap, deletedMap, lastPurgeTimesta
           continue;
         }
 
-        var cleanName = file.getName().replace(/\\.[^/.]+$/, "").replace(/_/g, " ");
+        // Anti-duplicación de fotos de la aplicación:
+        // Los nombres de archivos creados por la app contienen su ID: <titulo>_<unal-user-XXXXX>.<ext>
+        var nameMatch = file.getName().match(/(unal-user-\d+)/);
+        var embeddedId = nameMatch ? nameMatch[1] : null;
+
+        if (embeddedId) {
+          // Si está en lista negra, no resucitar
+          if (deletedMap[embeddedId] || deletedMap[fid]) {
+            continue;
+          }
+          // Si la foto ya está registrada en el catálogo, solo enlazar driveFileId y no duplicar
+          if (existingMap[embeddedId]) {
+            existingMap[embeddedId].driveFileId = fid;
+            existingMap[embeddedId].imageUrl = "https://lh3.googleusercontent.com/d/" + fid;
+            existingMap[embeddedId].syncedToDrive = true;
+            existingMap[fid] = existingMap[embeddedId];
+            continue; // ¡NO CREAR FOTO DUPLICADA!
+          }
+          // Si no existía en existingMap, usar el ID embebido y limpiar el título del sufijo de ID
+          var cleanTitle = file.getName().replace(/_unal-user-\d+.*$/, "").replace(/\.[^/.]+$/, "").replace(/_/g, " ").trim();
+          var photoObj = {
+            id: embeddedId,
+            title: cleanTitle || "Fotografía Campus Unalmed",
+            author: "Comunidad Unalmed",
+            location: "Medellín",
+            description: "Fotografía de la comunidad.",
+            imageUrl: "https://lh3.googleusercontent.com/d/" + fid,
+            driveFileId: fid,
+            driveWebViewLink: file.getUrl(),
+            points: 1200,
+            matchesPlayed: 0,
+            matchesWon: 0,
+            swipeLikes: 0,
+            swipePasses: 0,
+            comments: [],
+            isFavorite: false,
+            syncedToDrive: true,
+            createdAt: new Date().toISOString()
+          };
+          newPhotos.push(photoObj);
+          existingMap[embeddedId] = photoObj;
+          existingMap[fid] = photoObj;
+          continue;
+        }
+
+        var cleanName = file.getName().replace(/\.[^/.]+$/, "").replace(/_/g, " ");
         var photoObj = {
           id: pId,
           title: cleanName || "Fotografía Campus Unalmed",
@@ -977,6 +1021,39 @@ function scanDriveFolderImages(folder, existingMap, deletedMap, lastPurgeTimesta
     console.warn("Aviso escaneando imágenes de la carpeta:", err);
   }
   return newPhotos;
+}
+
+// Deduplica fotos para evitar que existan simultáneamente la foto original ('si') y el escaneo de Drive ('si unal-user-XXXX')
+function deduplicatePhotoList(photosList) {
+  var userMap = {};
+  var driveIdMap = {};
+  for (var i = 0; i < photosList.length; i++) {
+    var p = photosList[i];
+    if (p && !p.id.startsWith("drive-")) {
+      userMap[p.id] = p;
+      if (p.driveFileId) driveIdMap[p.driveFileId] = p;
+    }
+  }
+  var result = [];
+  for (var j = 0; j < photosList.length; j++) {
+    var item = photosList[j];
+    if (item && item.id.startsWith("drive-")) {
+      var dfid = item.driveFileId || item.id.replace("drive-", "");
+      var match = item.title ? item.title.match(/(unal-user-\d+)/) : null;
+      var canonical = (match && userMap[match[1]]) || driveIdMap[dfid];
+      if (canonical && canonical.id !== item.id) {
+        canonical.points = Math.max(canonical.points || 1200, item.points || 1200);
+        canonical.matchesPlayed = Math.max(canonical.matchesPlayed || 0, item.matchesPlayed || 0);
+        canonical.matchesWon = Math.max(canonical.matchesWon || 0, item.matchesWon || 0);
+        canonical.swipeLikes = Math.max(canonical.swipeLikes || 0, item.swipeLikes || 0);
+        canonical.swipePasses = Math.max(canonical.swipePasses || 0, item.swipePasses || 0);
+        if (!canonical.driveFileId) canonical.driveFileId = dfid;
+        continue; // OMITIR DUPLICADO
+      }
+    }
+    if (item) result.push(item);
+  }
+  return result;
 }
 
 function getSavedStateFromDrive() {
@@ -1065,6 +1142,7 @@ function getSavedStateFromDrive() {
     }
   }
 
+  state.photos = deduplicatePhotoList(state.photos || []);
   return state;
 }
 
@@ -1400,7 +1478,7 @@ function saveState(data) {
     version: 3,
     updatedAt: Date.now(),
     totalVotesCount: totalVotes,
-    photos: finalPhotos,
+    photos: deduplicatePhotoList(finalPhotos),
     deletedPhotoIds: allDeletedIds,
     deletedDynamicIds: allDeletedDynamicIds,
     lastPurgeTimestamp: lastPurgeTs,

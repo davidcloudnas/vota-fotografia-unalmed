@@ -656,20 +656,37 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let addedCount = 0;
     setPhotos((prev) => {
       const existingIds = new Set(prev.map((p) => p.driveFileId).filter(Boolean));
+      const existingUserIds = new Set(prev.map((p) => p.id));
       const deletedSet = new Set(latestStateRef.current.deletedPhotoIds || []);
       const newItems: Photo[] = [];
 
       driveFiles.forEach((df, idx) => {
         const driveKey = 'drive-' + df.fileId;
+        const match = df.fileName.match(/(unal-user-\d+)/);
+        const embeddedId = match ? match[1] : null;
+
         // Si la foto fue eliminada por el administrador, NUNCA volverla a agregar
-        if (deletedSet.has(df.fileId) || deletedSet.has(driveKey)) {
+        if (
+          deletedSet.has(df.fileId) ||
+          deletedSet.has(driveKey) ||
+          (embeddedId && deletedSet.has(embeddedId))
+        ) {
+          return;
+        }
+
+        // Si el archivo pertenece a una foto existente de la app, vincularlo y no duplicar
+        if (embeddedId && existingUserIds.has(embeddedId)) {
           return;
         }
 
         if (!existingIds.has(df.fileId)) {
+          const cleanTitle = embeddedId
+            ? df.fileName.replace(/_unal-user-\d+.*$/, '').replace(/\.[^/.]+$/, '').replace(/_/g, ' ')
+            : df.fileName.replace(/\.[^/.]+$/, '').replace(/_/g, ' ');
+
           newItems.push({
-            id: 'drive-' + df.fileId,
-            title: df.fileName.replace(/\.[^/.]+$/, '').replace(/_/g, ' '),
+            id: embeddedId || 'drive-' + df.fileId,
+            title: cleanTitle.trim() || 'Fotografía Campus Unalmed',
             author: 'Comunidad Unalmed',
             location: 'Campus El Volador',
             imageUrl: df.directImageUrl,
