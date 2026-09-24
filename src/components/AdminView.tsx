@@ -1029,29 +1029,49 @@ function deduplicatePhotoList(photosList) {
   var driveIdMap = {};
   for (var i = 0; i < photosList.length; i++) {
     var p = photosList[i];
-    if (p && !p.id.startsWith("drive-")) {
+    if (p && p.id && !p.id.startsWith("drive-")) {
       userMap[p.id] = p;
       if (p.driveFileId) driveIdMap[p.driveFileId] = p;
+      var m = p.imageUrl ? p.imageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) : null;
+      if (m && m[1]) driveIdMap[m[1]] = p;
     }
   }
   var result = [];
+  var seenDriveFids = {};
   for (var j = 0; j < photosList.length; j++) {
     var item = photosList[j];
-    if (item && item.id.startsWith("drive-")) {
-      var dfid = item.driveFileId || item.id.replace("drive-", "");
+    if (!item || !item.id) continue;
+    var dfid = item.driveFileId || (item.id.startsWith("drive-") ? item.id.replace("drive-", "") : "");
+    if (!dfid && item.imageUrl) {
+      var imgMatch = item.imageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+      if (imgMatch && imgMatch[1]) dfid = imgMatch[1];
+    }
+
+    if (item.id.startsWith("drive-")) {
       var match = item.title ? item.title.match(/(unal-user-\d+)/) : null;
-      var canonical = (match && userMap[match[1]]) || driveIdMap[dfid];
+      var canonical = (match && userMap[match[1]]) || (dfid && driveIdMap[dfid]);
       if (canonical && canonical.id !== item.id) {
         canonical.points = Math.max(canonical.points || 1200, item.points || 1200);
         canonical.matchesPlayed = Math.max(canonical.matchesPlayed || 0, item.matchesPlayed || 0);
         canonical.matchesWon = Math.max(canonical.matchesWon || 0, item.matchesWon || 0);
         canonical.swipeLikes = Math.max(canonical.swipeLikes || 0, item.swipeLikes || 0);
         canonical.swipePasses = Math.max(canonical.swipePasses || 0, item.swipePasses || 0);
-        if (!canonical.driveFileId) canonical.driveFileId = dfid;
+        if (dfid && !canonical.driveFileId) canonical.driveFileId = dfid;
         continue; // OMITIR DUPLICADO
       }
+
+      if (dfid && seenDriveFids[dfid]) {
+        continue; // OMITIR SEGUNDO ARCHIVO DE DRIVE DUPLICADO
+      }
+
+      // Si el título contiene unal-user-XXXX, limpiarlo para que se vea limpio en la interfaz
+      if (item.title) {
+        item.title = item.title.replace(/_?unal-user-\d+.*$/, "").replace(/_/g, " ").trim() || "Fotografía Campus Unalmed";
+      }
     }
-    if (item) result.push(item);
+
+    if (dfid) seenDriveFids[dfid] = true;
+    result.push(item);
   }
   return result;
 }
@@ -1699,14 +1719,31 @@ function BORRAR_TODO_Y_RESETEAR_A_CERO() {
                 Crear Dinámica
               </h2>
 
-              {activeDynamic && !activeDynamic.isClosed && (
-                <button
-                  type="button"
-                  onClick={handleCloseDynamicManually}
-                  className="px-4 py-2 rounded-full bg-rose-950/80 hover:bg-rose-900 text-rose-300 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
-                >
-                  Finalizar dinámica activa
-                </button>
+              {activeDynamic && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {!activeDynamic.isClosed && (
+                    <button
+                      type="button"
+                      onClick={handleCloseDynamicManually}
+                      className="px-4 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-neutral-950 text-xs font-bold transition cursor-pointer"
+                    >
+                      Finalizar y calcular podio
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`¿Estás seguro de que deseas cancelar y eliminar permanentemente la dinámica activa "${activeDynamic.title}"?`)) {
+                        deleteDynamic(activeDynamic.id);
+                        setSuccessNotice(`Dinámica "${activeDynamic.title}" eliminada.`);
+                        setTimeout(() => setSuccessNotice(''), 4000);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-full bg-rose-950/80 hover:bg-rose-900 text-rose-300 text-xs font-semibold border border-rose-800/40 transition cursor-pointer"
+                  >
+                    🗑️ Eliminar dinámica activa
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1809,6 +1846,58 @@ function BORRAR_TODO_Y_RESETEAR_A_CERO() {
                 Crear Dinámica
               </button>
             </form>
+
+            {/* LISTA Y GESTIÓN DE DINÁMICAS HISTÓRICAS */}
+            {dynamics.length > 0 && (
+              <div className="pt-6 border-t border-neutral-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                    Historial de Dinámicas Concluidas ({dynamics.length})
+                  </h3>
+                  <span className="text-xs text-neutral-400">
+                    Como administrador puedes borrar dinámicas que ya no desees conservar
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {dynamics.map((dyn) => (
+                    <div
+                      key={dyn.id}
+                      className="p-4 rounded-2xl bg-neutral-950 border border-neutral-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white text-sm">{dyn.title}</span>
+                          <span className="px-2 py-0.5 rounded-full bg-neutral-900 text-neutral-400 text-[10px] font-semibold">
+                            {dyn.totalVotesAtClose ?? 0} votos
+                          </span>
+                        </div>
+                        {dyn.description && (
+                          <p className="text-neutral-400 text-[11px] line-clamp-1">{dyn.description}</p>
+                        )}
+                        <span className="text-neutral-500 text-[10px] block">
+                          Iniciada: {new Date(dyn.startedAt).toLocaleDateString('es-CO')} • {dyn.closedAt ? `Finalizada: ${new Date(dyn.closedAt).toLocaleDateString('es-CO', { hour: '2-digit', minute: '2-digit' })}` : 'Cerrada'}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`¿Estás seguro de que deseas eliminar permanentemente la dinámica "${dyn.title}"? Esta acción borrará el registro del historial.`)) {
+                            deleteDynamic(dyn.id);
+                            setSuccessNotice(`Dinámica "${dyn.title}" eliminada.`);
+                            setTimeout(() => setSuccessNotice(''), 4000);
+                          }
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 text-xs font-semibold border border-rose-800/40 transition cursor-pointer self-start sm:self-auto flex items-center gap-1.5"
+                      >
+                        🗑️ Eliminar
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* SECCIÓN 2: CONFIGURACIÓN DE MODO DE VOTACIÓN (1v1, Swipe o Ambos) */}

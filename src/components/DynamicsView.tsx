@@ -15,6 +15,7 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
     timeRemainingSeconds,
     isAdmin,
     deletedPhotoIds,
+    deleteDynamic,
   } = usePhotos();
 
   const [selectedSession, setSelectedSession] = useState<DynamicSession | null>(null);
@@ -59,7 +60,7 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
     return (
       <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-20">
         {/* Back header */}
-        <div className="flex items-center justify-between gap-4 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
           <button
             onClick={() => setSelectedSession(null)}
             className="px-4 py-2 rounded-full bg-neutral-900 hover:bg-neutral-800 text-xs font-semibold text-neutral-300 hover:text-white transition cursor-pointer"
@@ -67,9 +68,27 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
             ← Volver a lista de dinámicas
           </button>
 
-          <span className="text-xs text-neutral-400">
-            Finalizada el {selectedSession.closedAt ? formatDate(selectedSession.closedAt) : 'Recientemente'}
-          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs text-neutral-400">
+              Finalizada el {selectedSession.closedAt ? formatDate(selectedSession.closedAt) : 'Recientemente'}
+            </span>
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`¿Estás seguro de que deseas eliminar permanentemente la dinámica "${selectedSession.title}"? Esta acción borrará el registro de la dinámica del historial.`)) {
+                    deleteDynamic(selectedSession.id);
+                    setSelectedSession(null);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded-full bg-rose-950/70 hover:bg-rose-900 text-rose-300 text-xs font-semibold border border-rose-800/40 transition cursor-pointer flex items-center gap-1.5"
+                title="Eliminar esta dinámica del historial"
+              >
+                🗑️ Eliminar Dinámica
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Dynamic Title */}
@@ -293,6 +312,21 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
                   Ver Podio y Top 3 Ganadores
                 </button>
               )}
+
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`¿Estás seguro de que deseas cancelar y eliminar la dinámica activa "${activeDynamic.title}"?`)) {
+                      deleteDynamic(activeDynamic.id);
+                    }
+                  }}
+                  className="px-4 py-3.5 rounded-2xl bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 text-xs font-bold border border-rose-800/40 transition cursor-pointer text-center"
+                  title="Eliminar dinámica activa"
+                >
+                  🗑️ Eliminar
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -326,9 +360,28 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
                     <span className="px-2.5 py-0.5 rounded-full bg-neutral-950 text-neutral-400 text-xs font-semibold">
                       Finalizada
                     </span>
-                    <span className="text-xs text-neutral-500">
-                      {session.closedAt ? formatDate(session.closedAt) : ''}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-neutral-500">
+                        {session.closedAt ? formatDate(session.closedAt) : ''}
+                      </span>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`¿Estás seguro de que deseas eliminar permanentemente la dinámica "${session.title}" del historial?`)) {
+                              deleteDynamic(session.id);
+                            }
+                          }}
+                          className="p-1.5 rounded-lg bg-neutral-950/80 hover:bg-rose-950 text-neutral-400 hover:text-rose-300 border border-neutral-800 hover:border-rose-800 transition cursor-pointer"
+                          title="Eliminar esta dinámica"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <h3 className="text-xl font-bold text-white group-hover:text-amber-400 transition-colors mb-2">

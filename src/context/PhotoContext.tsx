@@ -1470,7 +1470,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const deleteDynamic = (dynamicId: string) => {
     isUserActionRef.current = true;
-    setIsGlobalUpdating(true, 'Eliminando dinámica y asegurando lista negra...');
+    setIsGlobalUpdating(true, 'Eliminando dinámica...');
     const nextActive = activeDynamic?.id === dynamicId ? null : activeDynamic;
     if (activeDynamic?.id === dynamicId) {
       setActiveDynamic(null);
@@ -1481,24 +1481,11 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     );
     setDeletedDynamicIds(nextDeletedDynamics);
 
-    // Identify if the deleted dynamic had photos in allRankedPhotos or top3 to blacklist them as well
-    const targetDynamic =
-      dynamics.find((d) => d.id === dynamicId) || (activeDynamic?.id === dynamicId ? activeDynamic : null);
-    const dynamicPhotoIds = (targetDynamic?.allRankedPhotos || []).map((p) => p.id).filter(Boolean);
-    const nextDeletedPhotos = Array.from(
-      new Set([...(latestStateRef.current.deletedPhotoIds || []), ...dynamicPhotoIds])
-    );
-    if (dynamicPhotoIds.length > 0) {
-      setDeletedPhotoIds(nextDeletedPhotos);
-      setPhotos((prev) => prev.filter((p) => !dynamicPhotoIds.includes(p.id)));
-    }
-
     setDynamics((prev) => {
       const nextDynamics = prev.filter((d) => d.id !== dynamicId);
       latestStateRef.current.dynamics = nextDynamics;
       latestStateRef.current.activeDynamic = nextActive;
       latestStateRef.current.deletedDynamicIds = nextDeletedDynamics;
-      latestStateRef.current.deletedPhotoIds = nextDeletedPhotos;
 
       pushRemoteSharedState({
         version: 2,
@@ -1507,7 +1494,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         photos: latestStateRef.current.photos,
         activeDynamic: nextActive,
         dynamics: nextDynamics,
-        deletedPhotoIds: nextDeletedPhotos,
+        deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
         deletedDynamicIds: nextDeletedDynamics,
         lastPurgeTimestamp: latestStateRef.current.lastPurgeTimestamp,
         action: 'deleteDynamic',
@@ -1519,8 +1506,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return nextDynamics;
     });
 
-    setUserNotice('✓ Dinámica eliminada. Registrada en la lista negra para evitar que vuelva a resucitar.');
-    setTimeout(() => setUserNotice(null), 6000);
+    setUserNotice('✓ Dinámica eliminada exitosamente.');
+    setTimeout(() => setUserNotice(null), 5000);
   };
 
   const resetAllData = () => {

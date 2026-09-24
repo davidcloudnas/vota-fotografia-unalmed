@@ -611,22 +611,33 @@ export function mergeAppState(
   const driveIdMap = new Map<string, Photo>();
   const userPhotoIdMap = new Map<string, Photo>();
 
+  const getDriveFid = (p: Photo): string => {
+    if (p.driveFileId) return p.driveFileId;
+    if (p.id.startsWith('drive-')) return p.id.replace('drive-', '');
+    const m = p.imageUrl?.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    return m ? m[1] : '';
+  };
+
   // 1st pass: index canonical user photos
   rawPhotos.forEach((p) => {
     if (!p.id.startsWith('drive-')) {
-      if (p.driveFileId) driveIdMap.set(p.driveFileId, p);
+      const fid = getDriveFid(p);
+      if (fid) driveIdMap.set(fid, p);
       userPhotoIdMap.set(p.id, p);
     }
   });
 
-  // 2nd pass: filter out drive- duplicates (e.g. "si unal-user-1790276649301" vs "si")
+  // 2nd pass: filter out duplicates (by driveFileId, by embedded unal-user- ID, or exact same image)
   const mergedPhotos: Photo[] = [];
+  const seenDriveIds = new Set<string>();
+
   rawPhotos.forEach((p) => {
+    const fid = getDriveFid(p);
+
     if (p.id.startsWith('drive-')) {
-      const fid = p.driveFileId || p.id.replace('drive-', '');
       const match = p.title.match(/(unal-user-\d+)/);
       const canonicalByTitle = match ? userPhotoIdMap.get(match[1]) : null;
-      const canonicalByDrive = driveIdMap.get(fid);
+      const canonicalByDrive = fid ? driveIdMap.get(fid) : null;
 
       const canonical = canonicalByTitle || canonicalByDrive;
       if (canonical && canonical.id !== p.id) {
@@ -636,10 +647,20 @@ export function mergeAppState(
         canonical.matchesWon = Math.max(canonical.matchesWon || 0, p.matchesWon || 0);
         canonical.swipeLikes = Math.max(canonical.swipeLikes || 0, p.swipeLikes || 0);
         canonical.swipePasses = Math.max(canonical.swipePasses || 0, p.swipePasses || 0);
-        if (!canonical.driveFileId) canonical.driveFileId = fid;
+        if (fid && !canonical.driveFileId) canonical.driveFileId = fid;
         hasChanges = true;
         return; // Exclude duplicate from catalog!
       }
+
+      // If already seen another drive photo with the exact same file ID, omit duplicate
+      if (fid && seenDriveIds.has(fid)) {
+        hasChanges = true;
+        return;
+      }
+    }
+
+    if (fid) {
+      seenDriveIds.add(fid);
     }
     mergedPhotos.push(p);
   });
