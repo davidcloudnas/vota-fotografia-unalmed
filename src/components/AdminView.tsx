@@ -21,6 +21,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     logoutAdmin,
     adminVoteMode,
     setAdminVoteMode,
+    deviceId,
     photos,
     deletePhoto,
     resetAllData,
@@ -653,6 +654,28 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 >
                   {testingSyncUrl ? 'Probando...' : '🧪 Probar Conexión'}
                 </button>
+                {(syncUrlInput.trim() || APP_CONFIG.syncApiUrl) && (
+                  <a
+                    href={(syncUrlInput.trim() || APP_CONFIG.syncApiUrl).includes('?') ? `${(syncUrlInput.trim() || APP_CONFIG.syncApiUrl)}&ping=1` : `${(syncUrlInput.trim() || APP_CONFIG.syncApiUrl)}?ping=1`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white font-medium text-xs transition flex items-center justify-center gap-1 shrink-0"
+                    title="Abre la URL en una nueva pestaña para verificar directamente que Google responda con JSON y sin pedir clave"
+                  >
+                    🌐 Abrir en Navegador
+                  </a>
+                )}
+              </div>
+
+              {/* Identificador de Dispositivo actual */}
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400 bg-neutral-900/60 p-2 rounded-xl border border-neutral-800/60">
+                <span className="text-neutral-300 font-semibold">ID de este dispositivo:</span>
+                <code className="px-2 py-0.5 rounded bg-neutral-950 border border-neutral-800 text-amber-400 font-mono text-[10px]">
+                  {deviceId}
+                </code>
+                <span className="text-neutral-500 text-[10px]">
+                  (Cada teléfono o computador tiene su propio ID único para registrar emparejamientos y evitar votos duplicados)
+                </span>
               </div>
 
               {/* Resultado de la prueba de conexión */}
@@ -680,7 +703,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                       <span className={vercelDiag.vercelEnvDetected.hasSyncApiUrl ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
                         {vercelDiag.vercelEnvDetected.hasSyncApiUrl
                           ? '✓ Configurada en Vercel'
-                          : 'No detectada en backend'}
+                          : 'No detectada en backend (usando URL personalizada)'}
                       </span>
                     </div>
                     <div>
@@ -695,44 +718,124 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         {vercelDiag.vercelEnvDetected.activeProvider}
                       </span>
                     </div>
+                    {vercelDiag.scriptAccessible && (
+                      <div className="sm:col-span-2 text-emerald-400">
+                        • Conexión Google Apps Script en backend:{' '}
+                        <span className="font-bold">
+                          ✓ En línea (HTTP {vercelDiag.scriptStatus}) — {vercelDiag.totalPhotos ?? 0} fotos, {vercelDiag.totalVotes ?? 0} votos globales
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
 
               {/* Instrucciones y código de Google Apps Script */}
               {showGoogleScriptHelp && (
-                <div className="p-4 rounded-xl bg-neutral-900 border border-amber-400/30 space-y-3 text-xs">
+                <div className="p-4 rounded-xl bg-neutral-900 border border-amber-400/30 space-y-4 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-amber-400">
-                      Código probado para Google Apps Script (Almacena en tu Drive el archivo unalmed_database.json):
+                    <span className="font-bold text-amber-400 text-sm">
+                      Código Actualizado para Google Apps Script (unalmed_database.json en tu Drive):
                     </span>
                     <button
                       type="button"
                       onClick={() => {
-                        const code = `// Google Apps Script para Fotografia Unalmed
-// Guarda la base de datos sincronizada directamente en tu Google Drive
+                        const code = `// =========================================================================================
+// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 3.0 ULTRA-RÁPIDA)
+// =========================================================================================
+// 1. CARPETA DE GOOGLE DRIVE:
+// Especifica aquí el ID de la carpeta pública de Google Drive donde están las fotos.
+// La base de datos (unalmed_database.json) se guardará DIRECTAMENTE DENTRO de esta carpeta.
+var FOLDER_ID = "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"; // Pega aquí el mismo ID de VITE_DRIVE_FOLDER_ID
 var DB_FILENAME = "unalmed_database.json";
 
+// In-Memory RAM Cache Key (responde en menos de 50ms)
+var CACHE_KEY = "UNALMED_GLOBAL_STATE_V3";
+
 function doGet(e) {
-  var state = getSavedState();
+  var isPing = e && e.parameter && (e.parameter.ping === "1" || e.parameter.test === "1");
+  
+  // 1. Lectura ultrarrápida desde la memoria RAM (CacheService)
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(CACHE_KEY);
+  var state = null;
+  
+  if (cached) {
+    try {
+      state = JSON.parse(cached);
+    } catch(err) {}
+  }
+  
+  // Si no estaba en RAM, lee de Google Drive y llena la memoria RAM
+  if (!state) {
+    state = getSavedStateFromDrive();
+    try {
+      cache.put(CACHE_KEY, JSON.stringify(state), 21600); // 6 horas en caché RAM
+    } catch(err) {}
+  }
+
+  if (isPing) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      message: "Google Apps Script activo y conectado a la carpeta de Drive",
+      folderConfigured: Boolean(FOLDER_ID && FOLDER_ID !== "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"),
+      totalPhotos: (state.photos || []).length,
+      totalVotes: state.totalVotesCount || 0,
+      deletedPhotosCount: (state.deletedPhotoIds || []).length,
+      devicesCount: Object.keys(state.devices || {}).length,
+      cachedRAM: Boolean(cached),
+      timestamp: Date.now()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
   return ContentService.createTextOutput(JSON.stringify(state))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
+  // LockService evita cuellos de botella: si varios usuarios votan a la vez, no se bloquean 1 minuto
+  var lock = LockService.getScriptLock();
+  var hasLock = lock.tryLock(4000); // Máximo 4 segundos de espera
+  
   try {
     var contents = (e && e.postData && e.postData.contents) ? e.postData.contents : "{}";
     var parsed = JSON.parse(contents);
-    saveState(parsed);
-    return ContentService.createTextOutput(JSON.stringify({ success: true, timestamp: Date.now() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    var result = saveState(parsed);
+    
+    // Actualizar inmediatamente la memoria RAM para que el siguiente doGet sea instantáneo
+    try {
+      CacheService.getScriptCache().put(CACHE_KEY, JSON.stringify(result), 21600);
+    } catch(err) {}
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      timestamp: Date.now(),
+      totalPhotos: result.photos.length,
+      deletedCount: result.deletedPhotoIds.length,
+      devicesCount: Object.keys(result.devices || {}).length
+    })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ error: err.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
   }
 }
 
-// Función auxiliar para obtener el archivo rápido sin sobrecargar la búsqueda de Drive
+// Obtiene la carpeta de fotos de forma directa sin búsquedas lentas
+function getTargetFolder() {
+  if (FOLDER_ID && FOLDER_ID !== "ID_DE_TU_CARPETA_DE_DRIVE_AQUI") {
+    try {
+      return DriveApp.getFolderById(FOLDER_ID.trim());
+    } catch(err) {
+      console.warn("No se pudo abrir la carpeta por FOLDER_ID:", err);
+    }
+  }
+  return DriveApp.getRootFolder();
+}
+
 function getDatabaseFile() {
   var props = PropertiesService.getScriptProperties();
   var savedId = props.getProperty("DB_FILE_ID");
@@ -744,22 +847,22 @@ function getDatabaseFile() {
     }
   }
 
-  // Búsqueda en la carpeta raíz
+  // Búsqueda directa y rápida en la carpeta de fotos
   try {
-    var files = DriveApp.getRootFolder().getFilesByName(DB_FILENAME);
+    var folder = getTargetFolder();
+    var files = folder.getFilesByName(DB_FILENAME);
     if (files.hasNext()) {
       var f = files.next();
       props.setProperty("DB_FILE_ID", f.getId());
       return f;
     }
-  } catch (e) {
-    // Si la búsqueda global falla por saturación momentánea de Google
-    console.warn("Aviso búsqueda Drive:", e);
+  } catch(e) {
+    console.warn("Aviso búsqueda archivo:", e);
   }
   return null;
 }
 
-function getSavedState() {
+function getSavedStateFromDrive() {
   try {
     var file = getDatabaseFile();
     if (file) {
@@ -769,50 +872,186 @@ function getSavedState() {
   } catch (err) {
     console.warn("Aviso al leer estado:", err);
   }
-  return { photos: [], totalVotesCount: 0 };
+  return { version: 2, photos: [], totalVotesCount: 0, deletedPhotoIds: [], devices: {} };
 }
 
 function saveState(data) {
-  var jsonStr = JSON.stringify(data);
-  try {
-    var file = getDatabaseFile();
-    if (file) {
-      file.setContent(jsonStr);
-      return;
-    }
-    // Si no existe, lo crea en la raíz de Google Drive
-    var newFile = DriveApp.getRootFolder().createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
-    PropertiesService.getScriptProperties().setProperty("DB_FILE_ID", newFile.getId());
-  } catch (err) {
-    console.error("Error guardando estado:", err);
-    throw err;
+  var existing = getSavedStateFromDrive();
+
+  // 1. Unir IDs de fotos eliminadas (lista negra permanente para que NUNCA vuelvan a aparecer)
+  var deletedMap = {};
+  var existingDeleted = existing.deletedPhotoIds || [];
+  for (var d1 = 0; d1 < existingDeleted.length; d1++) {
+    deletedMap[existingDeleted[d1]] = true;
   }
+  var incomingDeleted = data.deletedPhotoIds || [];
+  for (var d2 = 0; d2 < incomingDeleted.length; d2++) {
+    deletedMap[incomingDeleted[d2]] = true;
+  }
+  if (data.action === "deletePhoto" && data.photoId) {
+    deletedMap[data.photoId] = true;
+  }
+  var allDeletedIds = Object.keys(deletedMap);
+
+  // 2. Filtrar fotos: NINGUNA foto eliminada debe guardarse o aparecer
+  var incomingPhotos = Array.isArray(data.photos) ? data.photos : (existing.photos || []);
+  var finalPhotos = [];
+  for (var i = 0; i < incomingPhotos.length; i++) {
+    var p = incomingPhotos[i];
+    if (p && p.id && !deletedMap[p.id] && !p.isDeleted) {
+      finalPhotos.push(p);
+    }
+  }
+
+  // 3. Votos totales acumulados
+  var totalVotes = Math.max(existing.totalVotesCount || 0, data.totalVotesCount || 0);
+
+  // 4. Registro de dispositivos
+  var devices = existing.devices || {};
+  if (data.deviceId) {
+    devices[data.deviceId] = {
+      lastSeen: Date.now(),
+      votedCount: (data.userVotedPhotos || []).length || (devices[data.deviceId] ? devices[data.deviceId].votedCount + 1 : 1)
+    };
+  }
+
+  // 5. Dinámicas
+  var activeDyn = data.activeDynamic !== undefined ? data.activeDynamic : existing.activeDynamic;
+  var dynamics = Array.isArray(data.dynamics) ? data.dynamics : (existing.dynamics || []);
+
+  var finalState = {
+    version: 2,
+    updatedAt: Date.now(),
+    totalVotesCount: totalVotes,
+    photos: finalPhotos,
+    deletedPhotoIds: allDeletedIds,
+    devices: devices,
+    activeDynamic: activeDyn,
+    dynamics: dynamics
+  };
+
+  var jsonStr = JSON.stringify(finalState, null, 2);
+  var file = getDatabaseFile();
+  if (file) {
+    file.setContent(jsonStr);
+  } else {
+    var folder = getTargetFolder();
+    var newFile = folder.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
+    PropertiesService.getScriptProperties().setProperty("DB_FILE_ID", newFile.getId());
+  }
+  return finalState;
 }
 
-// Para probar permisos manualmente desde el editor de Apps Script:
+// Para probar permisos y funcionamiento manualmente desde el editor de Apps Script:
 function testDrive() {
-  var state = getSavedState();
-  Logger.log("✓ Conexión con Google Drive exitosa. Estado actual: " + JSON.stringify(state));
+  var folder = getTargetFolder();
+  var file = getDatabaseFile();
+  var state = getSavedStateFromDrive();
+  Logger.log("✓ Google Drive conectado correctamente!");
+  Logger.log("✓ Carpeta seleccionada: " + folder.getName() + " (ID: " + folder.getId() + ")");
+  if (file) {
+    Logger.log("✓ Archivo de base de datos dentro de la carpeta: " + file.getName() + " (ID: " + file.getId() + ")");
+    Logger.log("✓ Enlace directo: " + file.getUrl());
+  }
+  Logger.log("✓ Total de fotos activas: " + (state.photos || []).length);
+  Logger.log("✓ Total de votos globales: " + (state.totalVotesCount || 0));
+  Logger.log("✓ Fotos eliminadas en lista negra: " + (state.deletedPhotoIds || []).length);
+  Logger.log("✓ Dispositivos registrados: " + Object.keys(state.devices || {}).length);
 }`;
                         navigator.clipboard.writeText(code);
                         setScriptCopied(true);
                         setTimeout(() => setScriptCopied(false), 3000);
                       }}
-                      className="px-2.5 py-1 rounded-lg bg-amber-400 text-neutral-950 font-bold text-[11px] transition cursor-pointer"
+                      className="px-3 py-1.5 rounded-lg bg-amber-400 text-neutral-950 font-bold text-xs transition cursor-pointer"
                     >
                       {scriptCopied ? '✓ Copiado' : 'Copiar Código'}
                     </button>
                   </div>
 
-                  <ol className="list-decimal pl-4 space-y-1 text-neutral-300 text-[11px]">
-                    <li>Ve a <strong>script.google.com</strong> e inicia sesión con tu cuenta Google (la misma de tu Drive).</li>
-                    <li>Crea un nuevo proyecto, pega el código y guárdalo (Ctrl+S).</li>
-                    <li>Haz clic en <strong>Implementar &gt; Nueva implementación</strong>.</li>
-                    <li>Tipo: <strong>Aplicación web</strong>.</li>
-                    <li><em>Ejecutar como:</em> <strong>Yo (tu cuenta)</strong>.</li>
-                    <li><em>Quién tiene acceso:</em> <strong>Cualquier usuario (incluso anónimos)</strong>.</li>
-                    <li>Copia la <strong>URL de la aplicación web</strong> (terminada en <code>/exec</code>), pégala arriba y haz clic en <strong>Guardar URL</strong> y luego en <strong>🧪 Probar Conexión</strong>.</li>
-                  </ol>
+                  {/* Guía rápida de configuración en 4 pasos */}
+                  <div className="space-y-2 text-neutral-300">
+                    <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800 space-y-1.5">
+                      <span className="font-bold text-white block">
+                        Paso a paso para desplegar / actualizar en script.google.com:
+                      </span>
+                      <ol className="list-decimal pl-4 space-y-1 text-neutral-300 text-[11px]">
+                        <li>Abre <strong>script.google.com</strong> con tu cuenta Google (la de tu Drive).</li>
+                        <li>Pega el código anterior y guárdalo (Ctrl+S).</li>
+                        <li>
+                          Haz clic en <strong>Implementar &gt; Gestionar implementaciones</strong> (o Nueva implementación si es la primera vez).
+                        </li>
+                        <li>Haz clic en el icono del <strong>Lápiz (Editar)</strong>.</li>
+                        <li>
+                          En <em>Versión</em>, selecciona <strong>Nueva versión</strong> (¡Paso crítico! Si no creas nueva versión, Google sigue ejecutando el código viejo).
+                        </li>
+                        <li><em>Ejecutar como:</em> <strong>Yo (tu cuenta de Google)</strong>.</li>
+                        <li><em>Quién tiene acceso:</em> <strong>Cualquier usuario (incluso anónimos)</strong>.</li>
+                        <li>Haz clic en <strong>Implementar</strong>. Copia la <strong>URL de la aplicación web</strong> (terminada en <code>/exec</code>), pégala en el campo de arriba y pulsa <strong>Guardar URL</strong> y <strong>🧪 Probar Conexión</strong>.</li>
+                      </ol>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                      <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800/80 space-y-1">
+                        <span className="font-bold text-amber-400 block">
+                          100% Certeza: ¿Cómo probar el script?
+                        </span>
+                        <ul className="list-disc pl-3.5 space-y-1 text-neutral-400">
+                          <li>
+                            <strong>En Apps Script:</strong> En la barra superior elige la función <code>testDrive</code> y pulsa <em>Ejecutar</em>. En el registro verás si creó el archivo en tu Drive.
+                          </li>
+                          <li>
+                            <strong>En tu navegador:</strong> Pulsa el botón <em>🌐 Abrir en Navegador</em>. Debes ver el JSON con tus fotos sin que Google te pida iniciar sesión.
+                          </li>
+                          <li>
+                            <strong>En la app:</strong> Pulsa <em>🧪 Probar Conexión</em>. El semáforo verde confirma que la base de datos está conectada.
+                          </li>
+                        </ul>
+                      </div>
+
+                      <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800/80 space-y-1">
+                        <span className="font-bold text-emerald-400 block">
+                          Carpeta de Fotos y Velocidad Ultrarrápida
+                        </span>
+                        <ul className="list-disc pl-3.5 space-y-1 text-neutral-400">
+                          <li>
+                            <strong>¿Por qué tardaba 1 minuto?</strong> Google Drive realizaba una búsqueda lenta en todo tu disco y se acumulaban bloqueos simultáneos. Con <code>CacheService</code> (memoria RAM) y <code>LockService</code>, ahora responde en <strong>milisegundos</strong>.
+                          </li>
+                          <li>
+                            <strong>¿Por qué antes no se mencionaba la carpeta?</strong> Antes el script guardaba en la raíz para facilitar la prueba inicial. Ahora se incluye <code>FOLDER_ID</code> arriba para guardar <code>unalmed_database.json</code> dentro de tu misma carpeta de fotos.
+                          </li>
+                          <li>
+                            <strong>ID por dispositivo:</strong> A cada celular se le asigna un <code>deviceId</code> único para registrar emparejamientos y evitar votos duplicados.
+                          </li>
+                          <li>
+                            <strong>Lista negra de fotos eliminadas:</strong> Al borrar una foto, se registra en <code>deletedPhotoIds</code> en Drive para que nadie pueda volver a verla.
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-neutral-950 rounded-xl border border-blue-500/20 space-y-1 text-[11px]">
+                      <span className="font-bold text-blue-400 block">
+                        Paso a paso para configurar Vercel y que se actualice fácilmente:
+                      </span>
+                      <ol className="list-decimal pl-4 space-y-1 text-neutral-400">
+                        <li>
+                          Ve a tu proyecto en <strong>vercel.com</strong> &gt; pestaña <strong>Settings</strong> &gt; <strong>Environment Variables</strong>.
+                        </li>
+                        <li>
+                          Agrega <code>VITE_SYNC_API_URL</code> con el valor de tu URL de Google Script (terminada en <code>/exec</code>).
+                        </li>
+                        <li>
+                          Agrega <code>VITE_DRIVE_FOLDER_ID</code> con el ID de tu carpeta de Google Drive.
+                        </li>
+                        <li>
+                          <strong>PASO CLAVE DE VERCEL:</strong> Ve a la pestaña <strong>Deployments</strong>, haz clic en los 3 puntos <code>...</code> del despliegue más reciente y selecciona <strong>Redeploy</strong> (Vite compila las variables al construir; si no redespliegas, la app web seguirá usando la configuración anterior).
+                        </li>
+                        <li>
+                          <strong>Actualizaciones continuas:</strong> Cada vez que hagas <code>git push</code> a GitHub, Vercel compila y despliega automáticamente la última versión sin que tengas que hacer nada manual.
+                        </li>
+                      </ol>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

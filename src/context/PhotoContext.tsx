@@ -9,6 +9,7 @@ import {
   GoogleAdminUser,
 } from '../types';
 import { INITIAL_PHOTOS } from '../data/initialPhotos';
+import { getOrCreateDeviceId } from '../utils/deviceId';
 import {
   requestGoogleDriveToken,
   getAccessToken,
@@ -60,6 +61,7 @@ interface PhotoContextType {
   deletePhoto: (photoId: string) => void;
 
   // Voter integrity (anti-fraud & single vote per photo/duel per user)
+  deviceId: string;
   hasUserVotedPhoto: (photoId: string) => boolean;
   hasUserVotedDuelPair: (idA: string, idB: string) => boolean;
   userVotedPhotoIds: string[];
@@ -68,6 +70,9 @@ interface PhotoContextType {
   isSyncConfigured: boolean;
   syncProviderName: string;
   isSyncingGlobalVotes: boolean;
+  isGlobalUpdating: boolean;
+  globalUpdateMessage: string | null;
+  setIsGlobalUpdating: (updating: boolean, message?: string | null) => void;
   lastGlobalSyncTime: number | null;
   syncGlobalVotes: () => Promise<boolean>;
   publishCurrentStateToGlobal: () => Promise<boolean>;
@@ -317,6 +322,27 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 
   const [isSyncingGlobalVotes, setIsSyncingGlobalVotes] = useState(false);
+  const [isGlobalUpdating, setIsGlobalUpdatingState] = useState(false);
+  const [globalUpdateMessage, setGlobalUpdateMessage] = useState<string | null>(null);
+  const globalUpdatingTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const setIsGlobalUpdating = useCallback((updating: boolean, message?: string | null) => {
+    if (globalUpdatingTimeoutRef.current) {
+      clearTimeout(globalUpdatingTimeoutRef.current);
+      globalUpdatingTimeoutRef.current = null;
+    }
+    setIsGlobalUpdatingState(updating);
+    setGlobalUpdateMessage(updating ? (message || 'Sincronizando con Google Drive...') : null);
+
+    // Hard safety timeout: Automatically dismiss after 5 seconds to ensure UI never freezes permanently
+    if (updating) {
+      globalUpdatingTimeoutRef.current = setTimeout(() => {
+        setIsGlobalUpdatingState(false);
+        setGlobalUpdateMessage(null);
+      }, 5000);
+    }
+  }, []);
+
   const [lastGlobalSyncTime, setLastGlobalSyncTime] = useState<number | null>(null);
   const [userNotice, setUserNotice] = useState<string | null>(null);
   const isSyncConfigured = isSharedStoreConfigured();
@@ -583,9 +609,16 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let addedCount = 0;
     setPhotos((prev) => {
       const existingIds = new Set(prev.map((p) => p.driveFileId).filter(Boolean));
+      const deletedSet = new Set(latestStateRef.current.deletedPhotoIds || []);
       const newItems: Photo[] = [];
 
       driveFiles.forEach((df, idx) => {
+        const driveKey = 'drive-' + df.fileId;
+        // Si la foto fue eliminada por el administrador, NUNCA volverla a agregar
+        if (deletedSet.has(df.fileId) || deletedSet.has(driveKey)) {
+          return;
+        }
+
         if (!existingIds.has(df.fileId)) {
           newItems.push({
             id: 'drive-' + df.fileId,
@@ -712,10 +745,11 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const publishCurrentStateToGlobal = useCallback(async (): Promise<boolean> => {
+    setIsGlobalUpdating(true, 'Guardando cambios y estadísticas en Google Drive...');
     setIsSyncingGlobalVotes(true);
     try {
       const pushPromise = pushRemoteSharedState({
-        version: 1,
+        version: 2,
         updatedAt: Date.now(),
         totalVotesCount,
         photos,
@@ -734,8 +768,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return false;
     } finally {
       setIsSyncingGlobalVotes(false);
+      setIsGlobalUpdating(false);
     }
-  }, [totalVotesCount, photos, activeDynamic, dynamics, deletedPhotoIds]);
+  }, [totalVotesCount, photos, activeDynamic, dynamics, deletedPhotoIds, setIsGlobalUpdating]);
 
   // Keep ref to latest state for unload/refresh protection
   const latestStateRef = React.useRef({
@@ -765,35 +800,40 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     hasPendingPushRef.current = true;
 
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    setIsGlobalUpdating(true, 'Guardando tu voto y sincronizando posiciones...');
     syncTimeoutRef.current = setTimeout(async () => {
       try {
         await pushRemoteSharedState({
-          version: 1,
+          version: 2,
           updatedAt: Date.now(),
           totalVotesCount: latestStateRef.current.totalVotesCount,
           photos: latestStateRef.current.photos,
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
+          deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
         });
         hasPendingPushRef.current = false;
         setLastGlobalSyncTime(Date.now());
       } catch (err) {
         console.warn('Error guardando votos compartidos:', err);
+      } finally {
+        setIsGlobalUpdating(false);
       }
-    }, 350);
-  }, [photos, totalVotesCount, activeDynamic, dynamics]);
+    }, 400);
+  }, [photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds, setIsGlobalUpdating]);
 
   // Prevent losing votes if user refreshes or closes the page immediately after voting
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (hasPendingPushRef.current) {
         sendBeaconSharedState({
-          version: 1,
+          version: 2,
           updatedAt: Date.now(),
           totalVotesCount: latestStateRef.current.totalVotesCount,
           photos: latestStateRef.current.photos,
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
+          deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
         });
         hasPendingPushRef.current = false;
       }
@@ -802,12 +842,13 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden' && hasPendingPushRef.current) {
         sendBeaconSharedState({
-          version: 1,
+          version: 2,
           updatedAt: Date.now(),
           totalVotesCount: latestStateRef.current.totalVotesCount,
           photos: latestStateRef.current.photos,
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
+          deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
         });
         hasPendingPushRef.current = false;
       }
@@ -1083,25 +1124,29 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       createdAt: 'Hoy',
     };
 
+    setIsGlobalUpdating(true, 'Registrando nueva foto en Google Drive...');
     setPhotos((prev) => {
       const updated = [newPhoto, ...prev];
       latestStateRef.current.photos = updated;
       // Immediate push to Google Apps Script / Vercel cloud
       pushRemoteSharedState({
-        version: 1,
+        version: 2,
         updatedAt: Date.now(),
         totalVotesCount: latestStateRef.current.totalVotesCount,
         photos: updated,
         activeDynamic: latestStateRef.current.activeDynamic,
         dynamics: latestStateRef.current.dynamics,
         deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
-      }).catch((e) => console.warn('Error sincronizando foto nueva:', e));
+      })
+        .catch((e) => console.warn('Error sincronizando foto nueva:', e))
+        .finally(() => setIsGlobalUpdating(false));
       return updated;
     });
   };
 
   const deletePhoto = (photoId: string) => {
     isUserActionRef.current = true;
+    setIsGlobalUpdating(true, 'Eliminando foto permanentemente de Google Drive...');
     const nextDeletedIds = Array.from(new Set([...(latestStateRef.current.deletedPhotoIds || []), photoId]));
     setDeletedPhotoIds(nextDeletedIds);
 
@@ -1112,19 +1157,23 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       // Immediate remote push with tombstone so other devices delete it instantly!
       pushRemoteSharedState({
-        version: 1,
+        version: 2,
         updatedAt: Date.now(),
         totalVotesCount: latestStateRef.current.totalVotesCount,
         photos: updatedPhotos,
         activeDynamic: latestStateRef.current.activeDynamic,
         dynamics: latestStateRef.current.dynamics,
         deletedPhotoIds: nextDeletedIds,
-      }).catch((e) => console.warn('Error sincronizando eliminación de foto:', e));
+        action: 'deletePhoto',
+        photoId,
+      })
+        .catch((e) => console.warn('Error sincronizando eliminación de foto:', e))
+        .finally(() => setIsGlobalUpdating(false));
 
       return updatedPhotos;
     });
 
-    setUserNotice('Foto eliminada. Recuerda refrescar la página en tu teléfono u otros dispositivos para ver los cambios de inmediato.');
+    setUserNotice('✓ Foto eliminada permanentemente. Registrada en la base de datos de Google Drive para que no le aparezca a nadie.');
     setTimeout(() => setUserNotice(null), 8000);
 
     if (selectedPhotoId === photoId) {
@@ -1323,6 +1372,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const refreshFromCloud = useCallback(async () => {
+    setIsGlobalUpdating(true, 'Actualizando fotos, votos y clasificaciones desde Google Drive...');
     setIsSyncingGlobalVotes(true);
     try {
       const remote = await fetchRemoteSharedState();
@@ -1376,8 +1426,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setTimeout(() => setUserNotice(null), 3500);
     } finally {
       setIsSyncingGlobalVotes(false);
+      setIsGlobalUpdating(false);
     }
-  }, [driveFolder?.folderId, syncGlobalVotes, loadPhotosFromDrive]);
+  }, [driveFolder?.folderId, syncGlobalVotes, loadPhotosFromDrive, setIsGlobalUpdating]);
 
   const selectedPhoto = photos.find((p) => p.id === selectedPhotoId) || null;
 
@@ -1400,12 +1451,16 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         resetAllData,
         clearLocalCache,
         deletePhoto,
+        deviceId: getOrCreateDeviceId(),
         hasUserVotedPhoto,
         hasUserVotedDuelPair,
         userVotedPhotoIds,
         isSyncConfigured,
         syncProviderName,
         isSyncingGlobalVotes,
+        isGlobalUpdating,
+        globalUpdateMessage,
+        setIsGlobalUpdating,
         lastGlobalSyncTime,
         syncGlobalVotes,
         publishCurrentStateToGlobal,

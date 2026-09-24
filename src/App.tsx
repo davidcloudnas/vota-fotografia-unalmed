@@ -14,6 +14,7 @@ import { UploadView } from './components/UploadView';
 import { AdminView } from './components/AdminView';
 import { DynamicsView } from './components/DynamicsView';
 import { PhotoDetailModal } from './components/PhotoDetailModal';
+import { SyncLoadingOverlay } from './components/SyncLoadingOverlay';
 
 function MainContent() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('vote');
@@ -59,6 +60,9 @@ function MainContent() {
 
       {/* Photo Detail & Commenting Modal */}
       <PhotoDetailModal />
+
+      {/* Fullscreen Loading & Interaction Blocker during updates */}
+      <SyncLoadingOverlay />
 
       {/* Minimalist Footer */}
       <footer className="w-full py-8 mt-auto bg-neutral-950 text-neutral-500 text-xs text-center px-4">

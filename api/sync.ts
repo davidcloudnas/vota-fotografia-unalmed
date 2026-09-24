@@ -7,7 +7,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-sync-url');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 200;
@@ -15,24 +15,73 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
     return;
   }
 
-  const scriptUrl = process.env.VITE_SYNC_API_URL || '';
+  // Prioritize URL passed from app client header, or Vercel environment variables
+  const customHeaderUrl = (req.headers['x-sync-url'] as string) || '';
+  const scriptUrl =
+    (customHeaderUrl && customHeaderUrl.trim()) ||
+    process.env.VITE_SYNC_API_URL ||
+    process.env.SYNC_API_URL ||
+    '';
 
   const reqUrl = req.url || '';
 
-  // Diagnostic Endpoint: Check what variables are loaded in Vercel
-  if (reqUrl.includes('env_check') || reqUrl.includes('diagnostic')) {
+  // Diagnostic Endpoint: Check what variables are loaded and test script connection
+  if (reqUrl.includes('env_check') || reqUrl.includes('diagnostic') || reqUrl.includes('test_url')) {
+    let scriptAccessible = false;
+    let scriptStatus: number | null = null;
+    let scriptError: string | null = null;
+    let totalPhotos = 0;
+    let totalVotes = 0;
+    let dbFileExists = false;
+
+    if (scriptUrl) {
+      try {
+        const pingUrl = scriptUrl.includes('?') ? `${scriptUrl}&ping=1` : `${scriptUrl}?ping=1`;
+        const testRes = await fetch(pingUrl, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          redirect: 'follow',
+        });
+        scriptStatus = testRes.status;
+        if (testRes.ok) {
+          scriptAccessible = true;
+          const txt = await testRes.text();
+          try {
+            const parsed = JSON.parse(txt);
+            if (parsed && typeof parsed === 'object') {
+              const root = parsed.state || parsed.data || parsed;
+              const photosArr = Array.isArray(root.photos) ? root.photos : [];
+              totalPhotos = root.totalPhotos ?? photosArr.length;
+              totalVotes = root.totalVotes ?? root.totalVotesCount ?? 0;
+              dbFileExists = Boolean(root.dbFileExists || photosArr.length > 0 || parsed.version);
+            }
+          } catch {
+            // raw text response
+          }
+        }
+      } catch (err: unknown) {
+        scriptError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
     res.setHeader('Content-Type', 'application/json');
     res.statusCode = 200;
     res.end(
       JSON.stringify({
         vercelEnvDetected: {
-          hasSyncApiUrl: !!process.env.VITE_SYNC_API_URL,
-          hasDriveFolderId: !!process.env.VITE_DRIVE_FOLDER_ID,
+          hasSyncApiUrl: !!(process.env.VITE_SYNC_API_URL || process.env.SYNC_API_URL),
+          hasDriveFolderId: !!(process.env.VITE_DRIVE_FOLDER_ID || process.env.DRIVE_FOLDER_ID),
           activeProvider: scriptUrl
             ? 'Google Apps Script (Google Drive / Vercel)'
             : 'Memoria Local (Pendiente VITE_SYNC_API_URL)',
         },
         scriptUrlConfigured: !!scriptUrl,
+        scriptAccessible,
+        scriptStatus,
+        scriptError,
+        totalPhotos,
+        totalVotes,
+        dbFileExists,
         timestamp: Date.now(),
       })
     );
@@ -60,6 +109,7 @@ export default async function handler(req: IncomingMessage & { body?: unknown; u
             else if ('data' in json && json.data) state = json.data;
           }
           if (state && typeof state === 'object' && Array.isArray((state as Record<string, unknown>).photos)) {
+            globalStateCache = state;
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
             res.end(JSON.stringify(state));

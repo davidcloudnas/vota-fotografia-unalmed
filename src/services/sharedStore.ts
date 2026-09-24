@@ -1,5 +1,6 @@
 import { Photo, DynamicSession, CommentItem } from '../types';
 import { APP_CONFIG } from '../config';
+import { getOrCreateDeviceId } from '../utils/deviceId';
 
 export interface SharedAppState {
   version: number;
@@ -9,6 +10,9 @@ export interface SharedAppState {
   activeDynamic: DynamicSession | null;
   dynamics: DynamicSession[];
   deletedPhotoIds?: string[];
+  deviceId?: string;
+  action?: string;
+  photoId?: string;
 }
 
 /**
@@ -36,18 +40,99 @@ export function isSharedStoreConfigured(): boolean {
 }
 
 /**
- * Test connectivity with a given Google Apps Script or Webhook URL
+ * Test connectivity with a given Google Apps Script or Webhook URL with deep diagnostic feedback
  */
-export async function testSyncUrlConnection(url: string): Promise<{ success: boolean; message: string }> {
+export async function testSyncUrlConnection(
+  url: string
+): Promise<{ success: boolean; message: string; details?: unknown }> {
   if (!url || !url.trim().startsWith('http')) {
     return { success: false, message: 'La URL no es válida. Debe comenzar con https://' };
   }
+  const cleanUrl = url.trim();
+
+  // Validaciones comunes de URLs erróneas de Google Apps Script
+  if (cleanUrl.includes('/edit')) {
+    return {
+      success: false,
+      message:
+        '⚠️ La URL termina en /edit (es la URL del editor de código). Necesitas la URL de la aplicación web desplegada terminada en /exec. Ve a script.google.com > Implementar > Gestionar implementaciones y copia la "URL de la aplicación web".',
+    };
+  }
+
+  if (cleanUrl.includes('/dev')) {
+    return {
+      success: false,
+      message:
+        '⚠️ La URL termina en /dev. Esa URL es solo para pruebas privadas del desarrollador. Usa la URL de producción terminada en /exec para que los usuarios puedan votar sin iniciar sesión.',
+    };
+  }
+
+  // 1. Probar a través de /api/sync (backend Vercel - sin restricciones CORS de navegador)
   try {
-    const res = await fetchWithTimeout(url.trim(), { method: 'GET', redirect: 'follow' }, 6000);
+    const proxyRes = await fetchWithTimeout(
+      '/api/sync?test_url=1',
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'x-sync-url': cleanUrl,
+        },
+      },
+      6500
+    );
+    if (proxyRes.ok) {
+      const contentType = proxyRes.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const json = await proxyRes.json();
+        if (json && json.scriptAccessible) {
+          return {
+            success: true,
+            message: `✓ ¡Conexión 100% exitosa! Google Apps Script respondió y la base de datos unalmed_database.json está activa en Google Drive (${json.totalPhotos ?? 0} fotos, ${json.totalVotes ?? 0} votos globales).`,
+            details: json,
+          };
+        }
+      }
+    }
+  } catch {
+    // Si estamos en entorno estático sin servidor Vercel, continuamos con la prueba directa
+  }
+
+  // 2. Probar conexión directa desde el navegador
+  try {
+    const testUrl = cleanUrl.includes('?') ? `${cleanUrl}&ping=1` : `${cleanUrl}?ping=1`;
+    const res = await fetchWithTimeout(testUrl, { method: 'GET', redirect: 'follow' }, 6500);
+    const text = await res.text();
+
+    if (
+      text.includes('accounts.google.com') ||
+      text.includes('ServiceLogin') ||
+      text.includes('Sign in - Google Accounts')
+    ) {
+      return {
+        success: false,
+        message:
+          '⚠️ Permisos insuficientes en Google: Google Apps Script solicita iniciar sesión. En script.google.com ve a "Implementar > Gestionar implementaciones > Editar" y cambia "Quién tiene acceso" a "Cualquier usuario" (Anyone).',
+      };
+    }
+
     if (res.ok) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
+
+      if (parsed) {
+        return {
+          success: true,
+          message:
+            '✓ ¡Conexión 100% exitosa! El script respondió con datos JSON válidos y está vinculado a Google Drive.',
+          details: parsed,
+        };
+      }
+
       return {
         success: true,
-        message: '¡Conexión exitosa! El script de Google respondió y la base de datos está vinculada.',
+        message: '✓ Conexión exitosa. Google Apps Script respondió con código HTTP 200.',
       };
     } else {
       return {
@@ -59,7 +144,7 @@ export async function testSyncUrlConnection(url: string): Promise<{ success: boo
     const msg = err instanceof Error ? err.message : String(err);
     return {
       success: false,
-      message: `No se pudo conectar (${msg}). Revisa si diste los permisos de Google Drive al implementar.`,
+      message: `No se pudo conectar directamente (${msg}). Verifica que la URL termine en /exec y que en Google Apps Script el acceso esté en "Cualquier usuario".`,
     };
   }
 }
@@ -84,12 +169,21 @@ export interface VercelDiagnostics {
     activeProvider: string;
   };
   scriptUrlConfigured: boolean;
+  scriptAccessible?: boolean;
+  scriptStatus?: number;
+  totalPhotos?: number;
+  totalVotes?: number;
   timestamp: number;
 }
 
 export async function fetchVercelDiagnostics(): Promise<VercelDiagnostics | null> {
+  const syncUrl = APP_CONFIG.syncApiUrl;
+  const headers: Record<string, string> = {};
+  if (syncUrl) {
+    headers['x-sync-url'] = syncUrl;
+  }
   try {
-    const res = await fetchWithTimeout('/api/sync?diagnostic=1', {}, 4000);
+    const res = await fetchWithTimeout('/api/sync?diagnostic=1', { headers }, 5000);
     if (res.ok) {
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('application/json')) {
@@ -131,7 +225,33 @@ function parseSharedStateData(data: unknown): SharedAppState | null {
 export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
   const syncUrl = APP_CONFIG.syncApiUrl;
 
-  // Option 1: Custom Webhook / Google Apps Script (Direct client fetch)
+  // Option 1: Built-in Vercel Serverless Function `/api/sync` (handles backend Google Apps Script and bypasses browser CORS)
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (syncUrl) {
+      headers['x-sync-url'] = syncUrl;
+    }
+    const res = await fetchWithTimeout(
+      '/api/sync',
+      {
+        method: 'GET',
+        headers,
+      },
+      3500
+    );
+    if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const json = await res.json();
+        const parsed = parseSharedStateData(json);
+        if (parsed) return parsed;
+      }
+    }
+  } catch {
+    // Expected in purely static dev
+  }
+
+  // Option 2: Custom Webhook / Google Apps Script (Direct client fetch)
   if (syncUrl) {
     try {
       const res = await fetchWithTimeout(
@@ -153,44 +273,66 @@ export async function fetchRemoteSharedState(): Promise<SharedAppState | null> {
     }
   }
 
-  // Option 2: Built-in Vercel Serverless Function `/api/sync` (handles backend Google Apps Script and Redis)
-  try {
-    const res = await fetchWithTimeout(
-      '/api/sync',
-      {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      },
-      3500
-    );
-    if (res.ok) {
-      const contentType = res.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        const json = await res.json();
-        const parsed = parseSharedStateData(json);
-        if (parsed) return parsed;
-      }
-    }
-  } catch {
-    // Expected in purely static dev or if not provisioned
-  }
-
   return null;
+}
+
+function sanitizePhotosForSync(photos: Photo[]): Photo[] {
+  if (!Array.isArray(photos)) return [];
+  return photos.map((p) => {
+    let img = p.imageUrl || '';
+    // If it's a huge base64 data URI (> 40KB) and has a driveFileId, use direct Drive link
+    if (img.startsWith('data:') && p.driveFileId) {
+      img = `https://lh3.googleusercontent.com/d/${p.driveFileId}`;
+    }
+    return {
+      ...p,
+      imageUrl: img,
+    };
+  });
 }
 
 /**
  * Push updated votes & app state to remote store with strict timeout
  */
 export async function pushRemoteSharedState(state: SharedAppState): Promise<boolean> {
-  const payload = {
+  const deviceId = state.deviceId || getOrCreateDeviceId();
+  const payload: SharedAppState = {
     ...state,
+    photos: sanitizePhotosForSync(state.photos),
+    deviceId,
+    deletedPhotoIds: Array.from(new Set(state.deletedPhotoIds || [])),
     updatedAt: Date.now(),
   };
   const bodyStr = JSON.stringify(payload);
   const syncUrl = APP_CONFIG.syncApiUrl;
   let pushedSuccessfully = false;
 
-  // Option 1: Custom Webhook / Google Apps Script
+  // Option 1: Built-in Vercel Serverless Function `/api/sync` (bypasses browser CORS to Apps Script)
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (syncUrl) {
+      headers['x-sync-url'] = syncUrl;
+    }
+    const res = await fetchWithTimeout(
+      '/api/sync',
+      {
+        method: 'POST',
+        headers,
+        body: bodyStr,
+      },
+      4000
+    );
+    if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        pushedSuccessfully = true;
+      }
+    }
+  } catch {
+    // Continue with Option 2
+  }
+
+  // Option 2: Custom Webhook / Google Apps Script directly
   if (syncUrl) {
     try {
       const res = await fetchWithTimeout(
@@ -226,27 +368,6 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
     }
   }
 
-  // Option 2: Built-in Vercel Serverless Function `/api/sync` (bypasses browser CORS to Apps Script)
-  try {
-    const res = await fetchWithTimeout(
-      '/api/sync',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: bodyStr,
-      },
-      4000
-    );
-    if (res.ok) {
-      const contentType = res.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        pushedSuccessfully = true;
-      }
-    }
-  } catch {
-    // Ignore in purely static dev
-  }
-
   return pushedSuccessfully;
 }
 
@@ -254,7 +375,13 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
  * Sends a beacon request during beforeunload/pagehide to guarantee votes are not lost on refresh
  */
 export function sendBeaconSharedState(state: SharedAppState): boolean {
-  const payload = JSON.stringify({ ...state, updatedAt: Date.now() });
+  const deviceId = state.deviceId || getOrCreateDeviceId();
+  const payload = JSON.stringify({
+    ...state,
+    deviceId,
+    deletedPhotoIds: Array.from(new Set(state.deletedPhotoIds || [])),
+    updatedAt: Date.now(),
+  });
 
   if (APP_CONFIG.syncApiUrl && typeof navigator !== 'undefined' && navigator.sendBeacon) {
     try {
