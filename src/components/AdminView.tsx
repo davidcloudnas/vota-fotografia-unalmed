@@ -759,26 +759,33 @@ export const AdminView: React.FC<AdminViewProps> = ({
               {showGoogleScriptHelp && (
                 <div className="p-4 rounded-xl bg-neutral-900 border border-amber-400/30 space-y-4 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-amber-400 text-sm">
-                      Código Actualizado para Google Apps Script (unalmed_database.json en tu Drive):
-                    </span>
+                    <div>
+                      <span className="font-bold text-amber-400 text-sm block">
+                        Código Google Apps Script (Versión 5.0 — Muro Temporal & Anti-Duplicación):
+                      </span>
+                      <span className="text-[11px] text-neutral-400">
+                        Blindaje contra resurrección de fotos/dinámicas viejas y solución a las 5 copias en Drive.
+                      </span>
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
                         const code = `// =========================================================================================
-// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 4.0 CON ESCANEO DIRECTO DE CARPETA)
+// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 5.0 - MURO TEMPORAL Y ANTI-DUPLICACIÓN)
 // =========================================================================================
-// 1. CARPETA DE GOOGLE DRIVE:
-// Especifica aquí el ID de la carpeta pública de Google Drive donde están las fotos.
-// El script:
-// a) Guarda la base de datos (unalmed_database.json) dentro de esta carpeta.
-// b) Escanea automáticamente todas las imágenes (.jpg, .png, .webp) que subas a esta carpeta y las añade al catálogo.
-// c) NUNCA borra fotos de Drive aunque un cliente sincronice con lista vacía (fusión segura).
+// CARACTERÍSTICAS DE LA VERSIÓN 5.0:
+// 1. Muro Temporal Inmutable (lastPurgeTimestamp): Si el administrador purga la base de datos a 0,
+//    ningún teléfono desfasado puede resucitar fotos viejas ni dinámicas anteriores a esa fecha.
+// 2. Anti-Duplicación Estricta en Drive (Fin a las 5 copias): Antes de crear un archivo en la carpeta,
+//    verifica si ya existe por nombre de foto. Si existe, reutiliza el enlace evitando copias redundantes.
+// 3. Listas Negras Permanentes: deletedPhotoIds y deletedDynamicIds se preservan y protegen permanentemente.
+// 4. Depuración Automática de Teléfonos: Al consultar el script (doGet), los teléfonos reciben sólo datos válidos.
+
 var FOLDER_ID = "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"; // Pega aquí el ID de tu carpeta de Google Drive
 var DB_FILENAME = "unalmed_database.json";
 
 // In-Memory RAM Cache Key (máximo 45 segundos para que los cambios se reflejen de inmediato)
-var CACHE_KEY = "UNALMED_GLOBAL_STATE_V4";
+var CACHE_KEY = "UNALMED_GLOBAL_STATE_V5";
 
 function doGet(e) {
   var isPing = e && e.parameter && (e.parameter.ping === "1" || e.parameter.test === "1");
@@ -805,11 +812,14 @@ function doGet(e) {
   if (isPing) {
     return ContentService.createTextOutput(JSON.stringify({
       status: "ok",
-      message: "Google Apps Script activo y conectado a la carpeta de Drive",
+      version: "5.0-anti-ghost",
+      message: "Google Apps Script activo con muro temporal y protección anti-duplicación",
       folderConfigured: Boolean(FOLDER_ID && FOLDER_ID !== "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"),
       totalPhotos: (state.photos || []).length,
       totalVotes: state.totalVotesCount || 0,
       deletedPhotosCount: (state.deletedPhotoIds || []).length,
+      deletedDynamicsCount: (state.deletedDynamicIds || []).length,
+      lastPurgeTimestamp: state.lastPurgeTimestamp || null,
       devicesCount: Object.keys(state.devices || {}).length,
       cachedRAM: Boolean(cached),
       timestamp: Date.now()
@@ -822,7 +832,7 @@ function doGet(e) {
 
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  var hasLock = lock.tryLock(4000); // Espera máxima de 4s para evitar cuellos de botella
+  var hasLock = lock.tryLock(5000); // Espera de 5s para concurrencia segura
   
   try {
     var contents = (e && e.postData && e.postData.contents) ? e.postData.contents : "{}";
@@ -838,7 +848,9 @@ function doPost(e) {
       success: true,
       timestamp: Date.now(),
       totalPhotos: result.photos.length,
-      deletedCount: result.deletedPhotoIds.length,
+      deletedCount: (result.deletedPhotoIds || []).length,
+      deletedDynamicsCount: (result.deletedDynamicIds || []).length,
+      lastPurgeTimestamp: result.lastPurgeTimestamp || null,
       devicesCount: Object.keys(result.devices || {}).length
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -884,8 +896,29 @@ function getDatabaseFile() {
   return null;
 }
 
+// Extrae marca de tiempo numérica de un elemento (foto, dinámica o voto)
+function extractItemTimestamp(item) {
+  if (!item) return 0;
+  if (typeof item.createdAt === "number") return item.createdAt;
+  if (typeof item.startedAt === "number") return item.startedAt;
+  if (typeof item.timestamp === "number") return item.timestamp;
+  if (typeof item.createdAt === "string" && item.createdAt !== "Hoy") {
+    var parsed = Date.parse(item.createdAt);
+    if (!isNaN(parsed)) return parsed;
+  }
+  if (item.id && typeof item.id === "string") {
+    var match = item.id.match(/(\\d{10,13})/);
+    if (match) {
+      var val = parseInt(match[1], 10);
+      if (val > 1500000000000) return val;
+      if (val > 1500000000) return val * 1000;
+    }
+  }
+  return 0;
+}
+
 // Escanea archivos de imagen (.jpg, .png, .webp) directamente de la carpeta de Drive
-function scanDriveFolderImages(folder, existingMap, deletedMap) {
+function scanDriveFolderImages(folder, existingMap, deletedMap, lastPurgeTimestamp) {
   var newPhotos = [];
   try {
     var allowedTypes = [
@@ -903,6 +936,14 @@ function scanDriveFolderImages(folder, existingMap, deletedMap) {
         var fid = file.getId();
         var pId = "drive-" + fid;
         
+        // Si el archivo fue creado antes de la última purga total, ignorar completamente
+        try {
+          var fileCreated = file.getDateCreated ? file.getDateCreated().getTime() : 0;
+          if (lastPurgeTimestamp && fileCreated > 0 && fileCreated < lastPurgeTimestamp) {
+            continue;
+          }
+        } catch(eDate) {}
+
         // Si ya fue eliminada por admin o ya está registrada, omitir
         if (deletedMap[fid] || deletedMap[pId] || existingMap[pId] || existingMap[fid]) {
           continue;
@@ -926,7 +967,7 @@ function scanDriveFolderImages(folder, existingMap, deletedMap) {
           comments: [],
           isFavorite: false,
           syncedToDrive: true,
-          createdAt: "Hoy"
+          createdAt: new Date().toISOString()
         };
         newPhotos.push(photoObj);
         existingMap[pId] = photoObj;
@@ -939,7 +980,17 @@ function scanDriveFolderImages(folder, existingMap, deletedMap) {
 }
 
 function getSavedStateFromDrive() {
-  var state = { version: 2, photos: [], totalVotesCount: 0, deletedPhotoIds: [], devices: {} };
+  var state = {
+    version: 3,
+    photos: [],
+    totalVotesCount: 0,
+    deletedPhotoIds: [],
+    deletedDynamicIds: [],
+    lastPurgeTimestamp: 0,
+    devices: {},
+    activeDynamic: null,
+    dynamics: []
+  };
   var file = getDatabaseFile();
 
   if (file) {
@@ -951,6 +1002,8 @@ function getSavedStateFromDrive() {
           state = parsed;
           if (!Array.isArray(state.photos)) state.photos = [];
           if (!Array.isArray(state.deletedPhotoIds)) state.deletedPhotoIds = [];
+          if (!Array.isArray(state.deletedDynamicIds)) state.deletedDynamicIds = [];
+          if (typeof state.lastPurgeTimestamp !== "number") state.lastPurgeTimestamp = 0;
         }
       }
     } catch (err) {
@@ -958,11 +1011,20 @@ function getSavedStateFromDrive() {
     }
   }
 
-  // Mapa de fotos existentes y eliminadas
+  var lastPurgeTs = state.lastPurgeTimestamp || 0;
+
+  // Mapa de fotos eliminadas (lista negra)
   var deletedMap = {};
   var delArr = state.deletedPhotoIds || [];
   for (var d = 0; d < delArr.length; d++) {
     deletedMap[delArr[d]] = true;
+  }
+
+  // Mapa de dinámicas eliminadas
+  var deletedDynMap = {};
+  var delDynArr = state.deletedDynamicIds || [];
+  for (var dd = 0; dd < delDynArr.length; dd++) {
+    deletedDynMap[delDynArr[dd]] = true;
   }
 
   var existingMap = {};
@@ -971,6 +1033,12 @@ function getSavedStateFromDrive() {
   for (var p = 0; p < existingPhotos.length; p++) {
     var item = existingPhotos[p];
     if (item && item.id && !deletedMap[item.id]) {
+      if (lastPurgeTs > 0) {
+        var itemTs = extractItemTimestamp(item);
+        if (itemTs > 0 && itemTs < lastPurgeTs) {
+          continue;
+        }
+      }
       existingMap[item.id] = item;
       if (item.driveFileId) existingMap[item.driveFileId] = item;
       cleanPhotos.push(item);
@@ -978,11 +1046,11 @@ function getSavedStateFromDrive() {
   }
   state.photos = cleanPhotos;
 
-  // Escaneo automático de la carpeta de Drive para detectar fotos añadidas directamente
+  // Escaneo automático de la carpeta de Drive respetando el muro temporal
   if (FOLDER_ID && FOLDER_ID !== "ID_DE_TU_CARPETA_DE_DRIVE_AQUI") {
     try {
       var folder = getTargetFolder();
-      var discovered = scanDriveFolderImages(folder, existingMap, deletedMap);
+      var discovered = scanDriveFolderImages(folder, existingMap, deletedMap, lastPurgeTs);
       if (discovered.length > 0) {
         state.photos = state.photos.concat(discovered);
         var updatedJson = JSON.stringify(state, null, 2);
@@ -1001,9 +1069,11 @@ function getSavedStateFromDrive() {
 }
 
 function saveState(data) {
-  // 0. RESET TOTAL Y PURGA ABSOLUTA A CERO
+  var folder = getTargetFolder();
+
+  // 0. RESET TOTAL Y PURGA ABSOLUTA A CERO CON MURO TEMPORAL INMUTABLE
   if (data && (data.action === "RESET_EVERYTHING_PURGE_ALL" || data.purgeAll === true)) {
-    var folder = getTargetFolder();
+    var purgeTs = data.lastPurgeTimestamp || Date.now();
     
     // Mover a la papelera todos los archivos de fotos dentro de la carpeta para no dejar rastro
     try {
@@ -1021,11 +1091,13 @@ function saveState(data) {
     }
 
     var cleanZeroState = {
-      version: 2,
-      updatedAt: Date.now(),
+      version: 3,
+      updatedAt: purgeTs,
       totalVotesCount: 0,
       photos: [],
-      deletedPhotoIds: [],
+      deletedPhotoIds: (data.deletedPhotoIds && data.deletedPhotoIds.length > 0) ? data.deletedPhotoIds : [],
+      deletedDynamicIds: (data.deletedDynamicIds && data.deletedDynamicIds.length > 0) ? data.deletedDynamicIds : [],
+      lastPurgeTimestamp: purgeTs, // Muro temporal inmutable permanente
       devices: {},
       activeDynamic: null,
       dynamics: [],
@@ -1050,6 +1122,9 @@ function saveState(data) {
 
   var existing = getSavedStateFromDrive();
 
+  // 0.1 Muro temporal: el más reciente entre el existente y el recibido
+  var lastPurgeTs = Math.max(existing.lastPurgeTimestamp || 0, data.lastPurgeTimestamp || 0);
+
   // 1. Unir IDs de fotos eliminadas (lista negra permanente)
   var deletedMap = {};
   var existingDeleted = existing.deletedPhotoIds || [];
@@ -1063,16 +1138,48 @@ function saveState(data) {
   if (data.action === "deletePhoto" && data.photoId) {
     deletedMap[data.photoId] = true;
   }
-  var allDeletedIds = Object.keys(deletedMap);
 
-  // 2. FUSIÓN SEGURA DE FOTOGRAFÍAS:
-  // NUNCA sobreescribir la base de datos con un arreglo vacío.
-  // Conservar todas las fotos existentes en Drive y combinarlas con las que envíe el cliente.
+  // 1.1 Unir IDs de dinámicas eliminadas (lista negra permanente de dinámicas)
+  var deletedDynMap = {};
+  var existingDynDeleted = existing.deletedDynamicIds || [];
+  for (var dd1 = 0; dd1 < existingDynDeleted.length; dd1++) {
+    deletedDynMap[existingDynDeleted[dd1]] = true;
+  }
+  var incomingDynDeleted = data.deletedDynamicIds || [];
+  for (var dd2 = 0; dd2 < incomingDynDeleted.length; dd2++) {
+    deletedDynMap[incomingDynDeleted[dd2]] = true;
+  }
+  if (data.action === "deleteDynamic" && data.dynamicId) {
+    deletedDynMap[data.dynamicId] = true;
+  }
+
+  // Si se eliminó una foto específica, intentar mover su archivo en Drive a la papelera
+  if (data.action === "deletePhoto" && data.photoId) {
+    var exPhotos = existing.photos || [];
+    for (var xp = 0; xp < exPhotos.length; xp++) {
+      if (exPhotos[xp] && (exPhotos[xp].id === data.photoId || exPhotos[xp].driveFileId === data.photoId)) {
+        if (exPhotos[xp].driveFileId) {
+          try {
+            DriveApp.getFileById(exPhotos[xp].driveFileId).setTrashed(true);
+          } catch(errDelDrive) {}
+        }
+      }
+    }
+  }
+
+  var allDeletedIds = Object.keys(deletedMap);
+  var allDeletedDynamicIds = Object.keys(deletedDynMap);
+
+  // 2. FUSIÓN SEGURA DE FOTOGRAFÍAS CON FILTRADO CONTRA RESURRECCIÓN:
   var photoMap = {};
   var existingPhotos = existing.photos || [];
   for (var ep = 0; ep < existingPhotos.length; ep++) {
     var p = existingPhotos[ep];
     if (p && p.id && !deletedMap[p.id]) {
+      if (lastPurgeTs > 0) {
+        var pts = extractItemTimestamp(p);
+        if (pts > 0 && pts < lastPurgeTs) continue;
+      }
       photoMap[p.id] = p;
     }
   }
@@ -1081,6 +1188,14 @@ function saveState(data) {
   for (var ip = 0; ip < incomingPhotos.length; ip++) {
     var inc = incomingPhotos[ip];
     if (inc && inc.id && !deletedMap[inc.id]) {
+      // Si la foto entrante fue creada antes de la purga general, descartarla en el acto!
+      if (lastPurgeTs > 0) {
+        var incts = extractItemTimestamp(inc);
+        if (incts > 0 && incts < lastPurgeTs) {
+          continue; // BLOQUEADO: Foto zombie descartada
+        }
+      }
+
       if (!photoMap[inc.id]) {
         photoMap[inc.id] = inc;
       } else {
@@ -1113,105 +1228,120 @@ function saveState(data) {
     finalPhotos.push(photoMap[allKeys[k]]);
   }
 
-  // 2.1 Convertir imágenes base64 a archivos reales en Google Drive para que aparezcan físicamente en la carpeta
-  var folder = null;
+  // 2.1 CONVERSIÓN DE BASE64 A GOOGLE DRIVE CON ANTI-DUPLICACIÓN ESTRICTA (FIN A LAS 5 COPIAS):
   for (var fp = 0; fp < finalPhotos.length; fp++) {
     var photoItem = finalPhotos[fp];
     if (photoItem && photoItem.imageUrl && photoItem.imageUrl.indexOf("data:image/") === 0 && !photoItem.driveFileId) {
       try {
-        if (!folder) folder = getTargetFolder();
         var matches = photoItem.imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
         if (matches && matches[2]) {
           var mimeType = matches[1];
           var base64Data = matches[2];
-          var decodedBytes = Utilities.base64Decode(base64Data);
           var safeTitle = (photoItem.title || "foto").replace(/[^a-zA-Z0-9]/g, "_").substring(0, 30);
           var ext = mimeType.indexOf("png") !== -1 ? ".png" : (mimeType.indexOf("webp") !== -1 ? ".webp" : ".jpg");
           var fileName = safeTitle + "_" + photoItem.id + ext;
-          var blob = Utilities.newBlob(decodedBytes, mimeType, fileName);
-          var createdFile = folder.createFile(blob);
-          try {
-            createdFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-          } catch(e) {}
-          photoItem.driveFileId = createdFile.getId();
-          photoItem.driveWebViewLink = createdFile.getUrl();
-          photoItem.imageUrl = "https://lh3.googleusercontent.com/d/" + createdFile.getId();
-          photoItem.syncedToDrive = true;
+          
+          // COMPROBACIÓN CRÍTICA: ¿Ya existe un archivo con este nombre exacto en Drive?
+          var existingFiles = folder.getFilesByName(fileName);
+          var targetDriveFile = null;
+          if (existingFiles.hasNext()) {
+            // Reutilizar el archivo existente en Drive, ¡cero duplicados!
+            targetDriveFile = existingFiles.next();
+          } else {
+            // Solo si no existe físicamente, crearlo una única vez
+            var decodedBytes = Utilities.base64Decode(base64Data);
+            var blob = Utilities.newBlob(decodedBytes, mimeType, fileName);
+            targetDriveFile = folder.createFile(blob);
+            try {
+              targetDriveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+            } catch(eShare) {}
+          }
+
+          if (targetDriveFile) {
+            photoItem.driveFileId = targetDriveFile.getId();
+            photoItem.driveWebViewLink = targetDriveFile.getUrl();
+            photoItem.imageUrl = "https://lh3.googleusercontent.com/d/" + targetDriveFile.getId();
+            photoItem.syncedToDrive = true;
+          }
         }
       } catch(errUpload) {
-        console.warn("No se pudo crear archivo en Drive:", errUpload);
+        console.warn("No se pudo procesar archivo en Drive:", errUpload);
       }
     }
   }
 
-  // 3. LEDGER INMUTABLE DE ENFRENTAMIENTOS Y VOTOS POR DISPOSITIVO (Cero pérdida de concurrencia y anti-fraude)
+  // 3. LEDGER INMUTABLE DE ENFRENTAMIENTOS Y VOTOS POR DISPOSITIVO
   var recordedDuels = existing.recordedDuels || {};
   var recordedSwipes = existing.recordedSwipes || {};
 
-  // 3.1 Procesar nuevo enfrentamiento único si se envía en este push
+  // 3.1 Procesar nuevo enfrentamiento único
   if (data.duelRecord && data.duelRecord.voteId) {
     var vId = String(data.duelRecord.voteId);
-    // Solo si este dispositivo NO ha registrado este enfrentamiento previamente en la base de datos
-    if (!recordedDuels[vId]) {
-      recordedDuels[vId] = {
-        winnerId: data.duelRecord.winnerId,
-        loserId: data.duelRecord.loserId,
-        deviceId: data.duelRecord.deviceId,
-        pairKey: data.duelRecord.pairKey,
-        dynamicId: data.duelRecord.dynamicId,
-        timestamp: data.duelRecord.timestamp || Date.now()
-      };
+    var duelTs = data.duelRecord.timestamp || Date.now();
+    // Solo si es posterior al muro temporal de purga
+    if (lastPurgeTs === 0 || duelTs >= lastPurgeTs) {
+      if (!recordedDuels[vId]) {
+        recordedDuels[vId] = {
+          winnerId: data.duelRecord.winnerId,
+          loserId: data.duelRecord.loserId,
+          deviceId: data.duelRecord.deviceId,
+          pairKey: data.duelRecord.pairKey,
+          dynamicId: data.duelRecord.dynamicId,
+          timestamp: duelTs
+        };
 
-      var wId = data.duelRecord.winnerId;
-      var lId = data.duelRecord.loserId;
+        var wId = data.duelRecord.winnerId;
+        var lId = data.duelRecord.loserId;
 
-      if (photoMap[wId]) {
-        photoMap[wId].matchesPlayed = (photoMap[wId].matchesPlayed || 0) + 1;
-        photoMap[wId].matchesWon = (photoMap[wId].matchesWon || 0) + 1;
+        if (photoMap[wId]) {
+          photoMap[wId].matchesPlayed = (photoMap[wId].matchesPlayed || 0) + 1;
+          photoMap[wId].matchesWon = (photoMap[wId].matchesWon || 0) + 1;
+        }
+        if (photoMap[lId]) {
+          photoMap[lId].matchesPlayed = (photoMap[lId].matchesPlayed || 0) + 1;
+        }
+
+        if (photoMap[wId] && photoMap[lId]) {
+          var pw = photoMap[wId].points || 1200;
+          var pl = photoMap[lId].points || 1200;
+          var expW = 1 / (1 + Math.pow(10, (pl - pw) / 400));
+          var expL = 1 / (1 + Math.pow(10, (pw - pl) / 400));
+          photoMap[wId].points = Math.round(pw + 32 * (1 - expW));
+          photoMap[lId].points = Math.max(800, Math.round(pl + 32 * (0 - expL)));
+        }
+
+        existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
       }
-      if (photoMap[lId]) {
-        photoMap[lId].matchesPlayed = (photoMap[lId].matchesPlayed || 0) + 1;
-      }
-
-      // Cálculo de rating Elo justo y exacto
-      if (photoMap[wId] && photoMap[lId]) {
-        var pw = photoMap[wId].points || 1200;
-        var pl = photoMap[lId].points || 1200;
-        var expW = 1 / (1 + Math.pow(10, (pl - pw) / 400));
-        var expL = 1 / (1 + Math.pow(10, (pw - pl) / 400));
-        photoMap[wId].points = Math.round(pw + 32 * (1 - expW));
-        photoMap[lId].points = Math.max(800, Math.round(pl + 32 * (0 - expL)));
-      }
-
-      // Sumar exactamente 1 voto al contador global
-      existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
     }
   }
 
-  // 3.2 Procesar nuevo swipe único si se envía en este push
+  // 3.2 Procesar nuevo swipe único
   if (data.swipeRecord && data.swipeRecord.swipeId) {
     var sId = String(data.swipeRecord.swipeId);
-    if (!recordedSwipes[sId]) {
-      recordedSwipes[sId] = {
-        photoId: data.swipeRecord.photoId,
-        liked: Boolean(data.swipeRecord.liked),
-        deviceId: data.swipeRecord.deviceId,
-        dynamicId: data.swipeRecord.dynamicId,
-        timestamp: data.swipeRecord.timestamp || Date.now()
-      };
+    var swipeTs = data.swipeRecord.timestamp || Date.now();
+    if (lastPurgeTs === 0 || swipeTs >= lastPurgeTs) {
+      if (!recordedSwipes[sId]) {
+        recordedSwipes[sId] = {
+          photoId: data.swipeRecord.photoId,
+          liked: Boolean(data.swipeRecord.liked),
+          deviceId: data.swipeRecord.deviceId,
+          dynamicId: data.swipeRecord.dynamicId,
+          timestamp: swipeTs
+        };
 
-      var targetPhoto = photoMap[data.swipeRecord.photoId];
-      if (targetPhoto) {
-        if (data.swipeRecord.liked) {
-          targetPhoto.swipeLikes = (targetPhoto.swipeLikes || 0) + 1;
-          targetPhoto.points = (targetPhoto.points || 1200) + 10;
-        } else {
-          targetPhoto.swipePasses = (targetPhoto.swipePasses || 0) + 1;
-          targetPhoto.points = Math.max(800, (targetPhoto.points || 1200) - 4);
+        var targetPhoto = photoMap[data.swipeRecord.photoId];
+        if (targetPhoto) {
+          if (data.swipeRecord.liked) {
+            targetPhoto.swipeLikes = (targetPhoto.swipeLikes || 0) + 1;
+            targetPhoto.points = (targetPhoto.points || 1200) + 10;
+          } else {
+            targetPhoto.swipePasses = (targetPhoto.swipePasses || 0) + 1;
+            targetPhoto.points = Math.max(800, (targetPhoto.points || 1200) - 4);
+          }
         }
-      }
 
-      existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+        existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+      }
     }
   }
 
@@ -1227,13 +1357,23 @@ function saveState(data) {
     };
   }
 
-  // 5. Dinámicas: purgar permanentemente fotos eliminadas del podio y rankings
+  // 5. Dinámicas: purgar permanentemente dinámicas y fotos eliminadas
   var rawActive = data.activeDynamic !== undefined ? data.activeDynamic : existing.activeDynamic;
   var rawDynamics = Array.isArray(data.dynamics) && data.dynamics.length > 0 ? data.dynamics : (existing.dynamics || []);
 
   function cleanDynamic(dyn) {
-    if (!dyn) return dyn;
-    var filteredRanked = (dyn.allRankedPhotos || []).filter(function(p) { return p && p.id && !deletedMap[p.id]; });
+    if (!dyn || !dyn.id) return null;
+    if (deletedDynMap[dyn.id]) return null;
+    if (lastPurgeTs > 0 && (dyn.startedAt || 0) < lastPurgeTs) return null;
+
+    var filteredRanked = (dyn.allRankedPhotos || []).filter(function(p) {
+      if (!p || !p.id || deletedMap[p.id]) return false;
+      if (lastPurgeTs > 0) {
+        var pts = extractItemTimestamp(p);
+        if (pts > 0 && pts < lastPurgeTs) return false;
+      }
+      return true;
+    });
     var newTop3 = filteredRanked.slice(0, 3);
     return {
       id: dyn.id,
@@ -1252,15 +1392,18 @@ function saveState(data) {
   var activeDyn = rawActive ? cleanDynamic(rawActive) : null;
   var cleanDynamics = [];
   for (var cdi = 0; cdi < rawDynamics.length; cdi++) {
-    cleanDynamics.push(cleanDynamic(rawDynamics[cdi]));
+    var cd = cleanDynamic(rawDynamics[cdi]);
+    if (cd) cleanDynamics.push(cd);
   }
 
   var finalState = {
-    version: 2,
+    version: 3,
     updatedAt: Date.now(),
     totalVotesCount: totalVotes,
     photos: finalPhotos,
     deletedPhotoIds: allDeletedIds,
+    deletedDynamicIds: allDeletedDynamicIds,
+    lastPurgeTimestamp: lastPurgeTs,
     devices: devices,
     activeDynamic: activeDyn,
     dynamics: cleanDynamics,
@@ -1273,7 +1416,6 @@ function saveState(data) {
   if (file) {
     file.setContent(jsonStr);
   } else {
-    var folder = getTargetFolder();
     folder.createFile(DB_FILENAME, jsonStr, MimeType.PLAIN_TEXT);
   }
   return finalState;
@@ -1295,13 +1437,19 @@ function testDrive() {
   Logger.log("✓ Total de fotos activas en el catálogo: " + (state.photos || []).length);
   Logger.log("✓ Total de votos globales: " + (state.totalVotesCount || 0));
   Logger.log("✓ Fotos eliminadas en lista negra: " + (state.deletedPhotoIds || []).length);
+  Logger.log("✓ Dinámicas eliminadas en lista negra: " + (state.deletedDynamicIds || []).length);
+  Logger.log("✓ Muro temporal de purga activa: " + (state.lastPurgeTimestamp ? new Date(state.lastPurgeTimestamp).toISOString() : "Ninguno (catálogo activo)"));
   Logger.log("✓ Dispositivos registrados: " + Object.keys(state.devices || {}).length);
 }
 
 // FUNCIÓN PARA EJECUTAR MANUALMENTE EN APPS SCRIPT Y BORRARLO TODO A CERO:
 function BORRAR_TODO_Y_RESETEAR_A_CERO() {
-  saveState({ action: "RESET_EVERYTHING_PURGE_ALL", purgeAll: true });
-  Logger.log("✓ SE HA BORRADO TODO SIN EXCEPCIÓN: Todas las fotos, duelos, dinámicas y votos reseteados a 0.");
+  saveState({
+    action: "RESET_EVERYTHING_PURGE_ALL",
+    purgeAll: true,
+    lastPurgeTimestamp: Date.now()
+  });
+  Logger.log("✓ SE HA BORRADO TODO SIN EXCEPCIÓN: Todas las fotos, duelos, dinámicas y votos reseteados a 0 con muro temporal permanente.");
 }`;
                         navigator.clipboard.writeText(code);
                         setScriptCopied(true);

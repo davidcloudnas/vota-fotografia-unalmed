@@ -62,6 +62,8 @@ interface PhotoContextType {
   clearLocalCache: () => Promise<void>;
   deletePhoto: (photoId: string) => void;
   deletedPhotoIds: string[];
+  deletedDynamicIds: string[];
+  lastPurgeTimestamp: number;
   purgeEverythingToZero: () => Promise<boolean>;
 
   // Voter integrity (anti-fraud & single vote per photo/duel per user)
@@ -267,12 +269,33 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Global multi-user sync state
   const DELETED_PHOTOS_KEY = 'fotografia_unalmed_deleted_ids_v1';
+  const DELETED_DYNAMICS_KEY = 'fotografia_unalmed_deleted_dynamics_v1';
+  const LAST_PURGE_KEY = 'fotografia_unalmed_last_purge_ts_v1';
+
   const [deletedPhotoIds, setDeletedPhotoIds] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(DELETED_PHOTOS_KEY);
       return stored ? JSON.parse(stored) : [];
     } catch {
       return [];
+    }
+  });
+
+  const [deletedDynamicIds, setDeletedDynamicIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(DELETED_DYNAMICS_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [lastPurgeTimestamp, setLastPurgeTimestamp] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem(LAST_PURGE_KEY);
+      return stored ? parseInt(stored, 10) || 0 : 0;
+    } catch {
+      return 0;
     }
   });
 
@@ -363,6 +386,24 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // storage
     }
   }, [deletedPhotoIds]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DELETED_DYNAMICS_KEY, JSON.stringify(deletedDynamicIds));
+    } catch {
+      // storage
+    }
+  }, [deletedDynamicIds]);
+
+  useEffect(() => {
+    try {
+      if (lastPurgeTimestamp > 0) {
+        localStorage.setItem(LAST_PURGE_KEY, lastPurgeTimestamp.toString());
+      }
+    } catch {
+      // storage
+    }
+  }, [lastPurgeTimestamp]);
 
   // Sync to local storage
   useEffect(() => {
@@ -717,6 +758,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               activeDynamic: currentLocal.activeDynamic,
               dynamics: currentLocal.dynamics,
               deletedPhotoIds: currentLocal.deletedPhotoIds,
+              deletedDynamicIds: currentLocal.deletedDynamicIds,
+              lastPurgeTimestamp: currentLocal.lastPurgeTimestamp,
             },
             remote
           );
@@ -725,6 +768,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setActiveDynamic(merged.activeDynamic);
             setDynamics(merged.dynamics || []);
             setDeletedPhotoIds(merged.deletedPhotoIds || []);
+            setDeletedDynamicIds(merged.deletedDynamicIds || []);
+            setLastPurgeTimestamp(merged.lastPurgeTimestamp || 0);
             setActiveDuel((prevDuel) => {
               if (
                 !prevDuel ||
@@ -777,6 +822,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeDynamic,
         dynamics,
         deletedPhotoIds,
+        deletedDynamicIds,
+        lastPurgeTimestamp,
       });
       const timeoutPromise = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5500));
       const ok = await Promise.race([pushPromise, timeoutPromise]);
@@ -791,7 +838,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsSyncingGlobalVotes(false);
       setIsGlobalUpdating(false);
     }
-  }, [totalVotesCount, photos, activeDynamic, dynamics, deletedPhotoIds, setIsGlobalUpdating]);
+  }, [totalVotesCount, photos, activeDynamic, dynamics, deletedPhotoIds, deletedDynamicIds, lastPurgeTimestamp, setIsGlobalUpdating]);
 
   // Keep ref to latest state for unload/refresh protection
   const latestStateRef = React.useRef({
@@ -800,8 +847,18 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     activeDynamic,
     dynamics,
     deletedPhotoIds,
+    deletedDynamicIds,
+    lastPurgeTimestamp,
   });
-  latestStateRef.current = { photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds };
+  latestStateRef.current = {
+    photos,
+    totalVotesCount,
+    activeDynamic,
+    dynamics,
+    deletedPhotoIds,
+    deletedDynamicIds,
+    lastPurgeTimestamp,
+  };
   const hasPendingPushRef = React.useRef(false);
 
   // Initial pull on enter and periodic background polling (every 8 seconds)
@@ -837,6 +894,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
           deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+          deletedDynamicIds: latestStateRef.current.deletedDynamicIds,
+          lastPurgeTimestamp: latestStateRef.current.lastPurgeTimestamp,
           duelRecord: duelRecordToSend,
           swipeRecord: swipeRecordToSend,
         });
@@ -848,7 +907,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setIsSyncingGlobalVotes(false);
       }
     }, 350);
-  }, [photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds]);
+  }, [photos, totalVotesCount, activeDynamic, dynamics, deletedPhotoIds, deletedDynamicIds, lastPurgeTimestamp]);
 
   // Prevent losing votes if user refreshes or closes the page immediately after voting
   useEffect(() => {
@@ -1247,6 +1306,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeDynamic: latestStateRef.current.activeDynamic,
         dynamics: latestStateRef.current.dynamics,
         deletedPhotoIds: nextDeletedIds,
+        deletedDynamicIds: latestStateRef.current.deletedDynamicIds,
+        lastPurgeTimestamp: latestStateRef.current.lastPurgeTimestamp,
         action: 'deletePhoto',
         photoId,
       })
@@ -1324,13 +1385,15 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       latestStateRef.current.dynamics = nextDynamics;
 
       pushRemoteSharedState({
-        version: 1,
+        version: 2,
         updatedAt: Date.now(),
         totalVotesCount,
         photos,
         activeDynamic: closedDynamic,
         dynamics: nextDynamics,
         deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+        deletedDynamicIds: latestStateRef.current.deletedDynamicIds,
+        lastPurgeTimestamp: latestStateRef.current.lastPurgeTimestamp,
       }).catch((e) => console.warn('Error sincronizando cierre de dinámica:', e));
 
       return nextDynamics;
@@ -1376,39 +1439,71 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     latestStateRef.current.activeDynamic = newDynamic;
 
     pushRemoteSharedState({
-      version: 1,
+      version: 2,
       updatedAt: Date.now(),
       totalVotesCount: 0,
       photos: resetPhotos,
       activeDynamic: newDynamic,
       dynamics: latestStateRef.current.dynamics,
       deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+      deletedDynamicIds: latestStateRef.current.deletedDynamicIds,
+      lastPurgeTimestamp: latestStateRef.current.lastPurgeTimestamp,
     }).catch((e) => console.warn('Error sincronizando inicio de dinámica:', e));
   };
 
   const deleteDynamic = (dynamicId: string) => {
     isUserActionRef.current = true;
+    setIsGlobalUpdating(true, 'Eliminando dinámica y asegurando lista negra...');
     const nextActive = activeDynamic?.id === dynamicId ? null : activeDynamic;
     if (activeDynamic?.id === dynamicId) {
       setActiveDynamic(null);
     }
+
+    const nextDeletedDynamics = Array.from(
+      new Set([...(latestStateRef.current.deletedDynamicIds || []), dynamicId])
+    );
+    setDeletedDynamicIds(nextDeletedDynamics);
+
+    // Identify if the deleted dynamic had photos in allRankedPhotos or top3 to blacklist them as well
+    const targetDynamic =
+      dynamics.find((d) => d.id === dynamicId) || (activeDynamic?.id === dynamicId ? activeDynamic : null);
+    const dynamicPhotoIds = (targetDynamic?.allRankedPhotos || []).map((p) => p.id).filter(Boolean);
+    const nextDeletedPhotos = Array.from(
+      new Set([...(latestStateRef.current.deletedPhotoIds || []), ...dynamicPhotoIds])
+    );
+    if (dynamicPhotoIds.length > 0) {
+      setDeletedPhotoIds(nextDeletedPhotos);
+      setPhotos((prev) => prev.filter((p) => !dynamicPhotoIds.includes(p.id)));
+    }
+
     setDynamics((prev) => {
       const nextDynamics = prev.filter((d) => d.id !== dynamicId);
       latestStateRef.current.dynamics = nextDynamics;
       latestStateRef.current.activeDynamic = nextActive;
+      latestStateRef.current.deletedDynamicIds = nextDeletedDynamics;
+      latestStateRef.current.deletedPhotoIds = nextDeletedPhotos;
 
       pushRemoteSharedState({
-        version: 1,
+        version: 2,
         updatedAt: Date.now(),
         totalVotesCount: latestStateRef.current.totalVotesCount,
         photos: latestStateRef.current.photos,
         activeDynamic: nextActive,
         dynamics: nextDynamics,
-        deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
-      }).catch((e) => console.warn('Error sincronizando eliminación de dinámica:', e));
+        deletedPhotoIds: nextDeletedPhotos,
+        deletedDynamicIds: nextDeletedDynamics,
+        lastPurgeTimestamp: latestStateRef.current.lastPurgeTimestamp,
+        action: 'deleteDynamic',
+        dynamicId,
+      })
+        .catch((e) => console.warn('Error sincronizando eliminación de dinámica:', e))
+        .finally(() => setIsGlobalUpdating(false));
 
       return nextDynamics;
     });
+
+    setUserNotice('✓ Dinámica eliminada. Registrada en la lista negra para evitar que vuelva a resucitar.');
+    setTimeout(() => setUserNotice(null), 6000);
   };
 
   const resetAllData = () => {
@@ -1420,12 +1515,14 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setActiveDynamic(null);
     setDriveFolder(null);
     setDeletedPhotoIds([]);
+    setDeletedDynamicIds([]);
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(VOTES_COUNTER_KEY);
     localStorage.removeItem(DYNAMICS_KEY);
     localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
     localStorage.removeItem(DRIVE_FOLDER_KEY);
     localStorage.removeItem(DELETED_PHOTOS_KEY);
+    localStorage.removeItem(DELETED_DYNAMICS_KEY);
 
     latestStateRef.current = {
       photos: [],
@@ -1433,34 +1530,46 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       activeDynamic: null,
       dynamics: [],
       deletedPhotoIds: [],
+      deletedDynamicIds: [],
+      lastPurgeTimestamp: 0,
     };
 
     // Push empty state to remote store so cloud is cleared too
     pushRemoteSharedState({
-      version: 1,
+      version: 2,
       updatedAt: Date.now(),
       totalVotesCount: 0,
       photos: [],
       activeDynamic: null,
       dynamics: [],
       deletedPhotoIds: [],
+      deletedDynamicIds: [],
     }).catch((e) => console.warn('Error al vaciar datos remotos:', e));
   };
 
   const purgeEverythingToZero = async (): Promise<boolean> => {
     isUserActionRef.current = true;
     setIsGlobalUpdating(true, 'Borrando absolutamente TODO sin excepción y reseteando base de datos a 0...');
+    const purgeTs = Date.now();
     try {
-      // 1. Envío explícito a Google Apps Script para purgar archivos y base de datos
+      setLastPurgeTimestamp(purgeTs);
+      try {
+        localStorage.setItem(LAST_PURGE_KEY, purgeTs.toString());
+      } catch {}
+
+      // 1. Envío explícito a Google Apps Script para purgar archivos y base de datos con muro temporal permanente
       await pushRemoteSharedState({
         version: 2,
-        updatedAt: Date.now(),
+        updatedAt: purgeTs,
         totalVotesCount: 0,
         photos: [],
         activeDynamic: null,
         dynamics: [],
-        deletedPhotoIds: [],
+        deletedPhotoIds: latestStateRef.current.deletedPhotoIds || [],
+        deletedDynamicIds: latestStateRef.current.deletedDynamicIds || [],
+        lastPurgeTimestamp: purgeTs,
         action: 'RESET_EVERYTHING_PURGE_ALL',
+        purgeAll: true,
       });
 
       // 2. Limpieza de todo el estado local
@@ -1469,17 +1578,15 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setActiveDuel(null);
       setDynamics([]);
       setActiveDynamic(null);
-      setDeletedPhotoIds([]);
       setUserVotedPhotoIds([]);
       setUserVotedDuelPairs([]);
 
-      // 3. Limpieza de almacenamiento en navegador
+      // 3. Limpieza de almacenamiento en navegador (preservando muro temporal y listas negras)
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(VOTES_COUNTER_KEY);
       localStorage.removeItem(DYNAMICS_KEY);
       localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
       localStorage.removeItem(DRIVE_FOLDER_KEY);
-      localStorage.removeItem(DELETED_PHOTOS_KEY);
 
       try {
         Object.keys(localStorage).forEach((key) => {
@@ -1487,7 +1594,12 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             key.startsWith('unalmed_') ||
             key.startsWith('fotografia_unalmed_')
           ) {
-            if (key !== ADMIN_AUTH_KEY) {
+            if (
+              key !== ADMIN_AUTH_KEY &&
+              key !== LAST_PURGE_KEY &&
+              key !== DELETED_PHOTOS_KEY &&
+              key !== DELETED_DYNAMICS_KEY
+            ) {
               localStorage.removeItem(key);
             }
           }
@@ -1499,10 +1611,12 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         totalVotesCount: 0,
         activeDynamic: null,
         dynamics: [],
-        deletedPhotoIds: [],
+        deletedPhotoIds: latestStateRef.current.deletedPhotoIds || [],
+        deletedDynamicIds: latestStateRef.current.deletedDynamicIds || [],
+        lastPurgeTimestamp: purgeTs,
       };
 
-      setUserNotice('✓ Se ha borrado TODO sin excepción. Base de datos, fotos y votos reseteados a 0.');
+      setUserNotice('✓ Se ha borrado TODO sin excepción. Base de datos reseteada a 0 y muro temporal anti-resurrección activado.');
       setTimeout(() => setUserNotice(null), 8000);
       return true;
     } catch (err) {
@@ -1613,6 +1727,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         clearLocalCache,
         deletePhoto,
         deletedPhotoIds,
+        deletedDynamicIds,
+        lastPurgeTimestamp,
         deviceId: getOrCreateDeviceId(),
         hasUserVotedPhoto,
         hasUserVotedDuelPair,

@@ -29,9 +29,13 @@ export interface SharedAppState {
   activeDynamic: DynamicSession | null;
   dynamics: DynamicSession[];
   deletedPhotoIds?: string[];
+  deletedDynamicIds?: string[];
+  lastPurgeTimestamp?: number;
   deviceId?: string;
   action?: string;
   photoId?: string;
+  dynamicId?: string;
+  purgeAll?: boolean;
   duelRecord?: DuelRecord;
   swipeRecord?: SwipeRecord;
   recordedDuels?: Record<string, DuelRecord>;
@@ -328,6 +332,8 @@ export async function pushRemoteSharedState(state: SharedAppState): Promise<bool
     photos: sanitizePhotosForSync(state.photos),
     deviceId,
     deletedPhotoIds: Array.from(new Set(state.deletedPhotoIds || [])),
+    deletedDynamicIds: Array.from(new Set(state.deletedDynamicIds || [])),
+    lastPurgeTimestamp: state.lastPurgeTimestamp || undefined,
     updatedAt: Date.now(),
   };
   const bodyStr = JSON.stringify(payload);
@@ -431,6 +437,8 @@ export function mergeAppState(
     activeDynamic: DynamicSession | null;
     dynamics: DynamicSession[];
     deletedPhotoIds?: string[];
+    deletedDynamicIds?: string[];
+    lastPurgeTimestamp?: number;
   },
   remote: SharedAppState
 ): {
@@ -439,9 +447,17 @@ export function mergeAppState(
   activeDynamic: DynamicSession | null;
   dynamics: DynamicSession[];
   deletedPhotoIds: string[];
+  deletedDynamicIds: string[];
+  lastPurgeTimestamp: number;
   hasChanges: boolean;
 } {
   let hasChanges = false;
+
+  // Effective purge wall timestamp
+  const effectivePurgeTs = Math.max(local.lastPurgeTimestamp || 0, remote.lastPurgeTimestamp || 0);
+  if (effectivePurgeTs !== (local.lastPurgeTimestamp || 0)) {
+    hasChanges = true;
+  }
 
   // 1. Combine deleted photo IDs (tombstones) so deleted photos NEVER reappear
   const allDeletedIds = new Set<string>([
@@ -453,18 +469,58 @@ export function mergeAppState(
     hasChanges = true;
   }
 
-  // Filter out any locally existing photo that was deleted
+  // Combine deleted dynamic IDs
+  const allDeletedDynamicIds = new Set<string>([
+    ...(local.deletedDynamicIds || []),
+    ...(remote.deletedDynamicIds || []),
+  ]);
+
+  if (allDeletedDynamicIds.size > (local.deletedDynamicIds?.length || 0)) {
+    hasChanges = true;
+  }
+
+  // Helper to extract timestamp from item
+  const getItemTimestamp = (item: { id?: string; createdAt?: string | number; startedAt?: number }): number => {
+    if (!item) return 0;
+    if (typeof item.createdAt === 'number') return item.createdAt;
+    if (typeof item.startedAt === 'number') return item.startedAt;
+    if (typeof item.createdAt === 'string' && item.createdAt !== 'Hoy') {
+      const parsed = Date.parse(item.createdAt);
+      if (!isNaN(parsed)) return parsed;
+    }
+    if (item.id) {
+      const match = item.id.match(/(\d{10,13})/);
+      if (match) {
+        const val = parseInt(match[1], 10);
+        if (val > 1500000000000) return val;
+        if (val > 1500000000) return val * 1000;
+      }
+    }
+    return 0;
+  };
+
+  // Filter out any locally existing photo that was deleted or created before purge wall
   const filteredLocalPhotos = local.photos.filter((p) => {
     if (allDeletedIds.has(p.id)) {
       hasChanges = true;
       return false;
     }
+    if (effectivePurgeTs > 0) {
+      const ts = getItemTimestamp(p);
+      if (ts > 0 && ts < effectivePurgeTs) {
+        hasChanges = true;
+        return false;
+      }
+    }
     return true;
   });
 
-  // 2. Total votes: keep highest cumulative count
-  const newTotalVotes = Math.max(local.totalVotesCount, remote.totalVotesCount || 0);
-  if (newTotalVotes !== local.totalVotesCount) {
+  // 2. Total votes: if purge happened, ensure votes are not artificially inflated by pre-purge local votes
+  let newTotalVotes = Math.max(local.totalVotesCount, remote.totalVotesCount || 0);
+  if (effectivePurgeTs > 0 && (remote.updatedAt || 0) >= effectivePurgeTs && (remote.totalVotesCount || 0) === 0 && local.totalVotesCount > 0) {
+    newTotalVotes = 0;
+    hasChanges = true;
+  } else if (newTotalVotes !== local.totalVotesCount) {
     hasChanges = true;
   }
 
@@ -474,15 +530,23 @@ export function mergeAppState(
   const remotePhotosList = Array.isArray(remote.photos) ? remote.photos : [];
   const photoMap = new Map<string, Photo>();
 
-  // 3.1 First, register all remote photos (filtering out tombstones)
+  // 3.1 First, register all remote photos (filtering out tombstones and pre-purge)
   remotePhotosList.forEach((remotePhoto) => {
     if (!remotePhoto || !remotePhoto.id || allDeletedIds.has(remotePhoto.id)) return;
+    if (effectivePurgeTs > 0) {
+      const ts = getItemTimestamp(remotePhoto);
+      if (ts > 0 && ts < effectivePurgeTs) return;
+    }
     photoMap.set(remotePhoto.id, { ...remotePhoto });
   });
 
   // 3.2 Second, merge all locally known photos
   filteredLocalPhotos.forEach((localPhoto) => {
     if (!localPhoto || !localPhoto.id || allDeletedIds.has(localPhoto.id)) return;
+    if (effectivePurgeTs > 0) {
+      const ts = getItemTimestamp(localPhoto);
+      if (ts > 0 && ts < effectivePurgeTs) return;
+    }
     const remotePhoto = photoMap.get(localPhoto.id);
 
     if (!remotePhoto) {
@@ -555,17 +619,30 @@ export function mergeAppState(
     d.title === 'Dinámica de Apertura: Miradas de Unalmed' ||
     d.id?.startsWith('dynamic-init-');
 
-  if (remote.activeDynamic && !isOpeningDynamic(remote.activeDynamic)) {
-    if (!local.activeDynamic || isOpeningDynamic(local.activeDynamic)) {
-      mergedActiveDynamic = remote.activeDynamic;
+  // Check if active dynamic is deleted or pre-purge
+  if (mergedActiveDynamic) {
+    if (allDeletedDynamicIds.has(mergedActiveDynamic.id) || (effectivePurgeTs > 0 && (mergedActiveDynamic.startedAt || 0) < effectivePurgeTs)) {
+      mergedActiveDynamic = null;
       hasChanges = true;
-    } else if (remote.activeDynamic.id === local.activeDynamic.id) {
-      if (remote.activeDynamic.isClosed && !local.activeDynamic.isClosed) {
+    }
+  }
+
+  if (remote.activeDynamic && !isOpeningDynamic(remote.activeDynamic)) {
+    if (!allDeletedDynamicIds.has(remote.activeDynamic.id) && (effectivePurgeTs === 0 || (remote.activeDynamic.startedAt || 0) >= effectivePurgeTs)) {
+      if (!local.activeDynamic || isOpeningDynamic(local.activeDynamic)) {
+        mergedActiveDynamic = remote.activeDynamic;
+        hasChanges = true;
+      } else if (remote.activeDynamic.id === local.activeDynamic.id) {
+        if (remote.activeDynamic.isClosed && !local.activeDynamic.isClosed) {
+          mergedActiveDynamic = remote.activeDynamic;
+          hasChanges = true;
+        }
+      } else if ((remote.activeDynamic.startedAt || 0) > (local.activeDynamic.startedAt || 0)) {
         mergedActiveDynamic = remote.activeDynamic;
         hasChanges = true;
       }
-    } else if ((remote.activeDynamic.startedAt || 0) > (local.activeDynamic.startedAt || 0)) {
-      mergedActiveDynamic = remote.activeDynamic;
+    } else {
+      mergedActiveDynamic = null;
       hasChanges = true;
     }
   } else if (local.activeDynamic && isOpeningDynamic(local.activeDynamic)) {
@@ -576,12 +653,12 @@ export function mergeAppState(
   // 5. Merge closed / historical dynamics list
   const dynamicsMap = new Map<string, DynamicSession>();
   (local.dynamics || []).forEach((d) => {
-    if (!isOpeningDynamic(d)) {
+    if (!isOpeningDynamic(d) && !allDeletedDynamicIds.has(d.id) && (effectivePurgeTs === 0 || (d.startedAt || 0) >= effectivePurgeTs)) {
       dynamicsMap.set(d.id, d);
     }
   });
   (remote.dynamics || []).forEach((rd) => {
-    if (isOpeningDynamic(rd)) return;
+    if (isOpeningDynamic(rd) || allDeletedDynamicIds.has(rd.id) || (effectivePurgeTs > 0 && (rd.startedAt || 0) < effectivePurgeTs)) return;
     const existing = dynamicsMap.get(rd.id);
     if (!existing) {
       dynamicsMap.set(rd.id, rd);
@@ -604,7 +681,7 @@ export function mergeAppState(
   const sanitizeDynamic = (dyn: DynamicSession | null): DynamicSession | null => {
     if (!dyn) return null;
     const filteredRanked = (dyn.allRankedPhotos || []).filter(
-      (p) => p && p.id && !allDeletedIds.has(p.id)
+      (p) => p && p.id && !allDeletedIds.has(p.id) && (effectivePurgeTs === 0 || getItemTimestamp(p) >= effectivePurgeTs)
     );
     const newTop3 = filteredRanked.slice(0, 3);
     return {
@@ -623,6 +700,8 @@ export function mergeAppState(
     activeDynamic: cleanActiveDynamic,
     dynamics: cleanDynamics,
     deletedPhotoIds: Array.from(allDeletedIds),
+    deletedDynamicIds: Array.from(allDeletedDynamicIds),
+    lastPurgeTimestamp: effectivePurgeTs,
     hasChanges,
   };
 }
