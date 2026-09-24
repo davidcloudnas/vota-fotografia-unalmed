@@ -32,6 +32,8 @@ import {
   mergeAppState,
   isSharedStoreConfigured,
   getActiveSyncProviderName,
+  DuelRecord,
+  SwipeRecord,
 } from '../services/sharedStore';
 
 interface PhotoContextType {
@@ -59,6 +61,7 @@ interface PhotoContextType {
   resetAllData: () => void;
   clearLocalCache: () => Promise<void>;
   deletePhoto: (photoId: string) => void;
+  deletedPhotoIds: string[];
 
   // Voter integrity (anti-fraud & single vote per photo/duel per user)
   deviceId: string;
@@ -349,6 +352,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const syncProviderName = getActiveSyncProviderName();
   const syncTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const isUserActionRef = React.useRef<boolean>(false);
+  const pendingDuelRecordRef = React.useRef<DuelRecord | null>(null);
+  const pendingSwipeRecordRef = React.useRef<SwipeRecord | null>(null);
 
   useEffect(() => {
     try {
@@ -818,6 +823,11 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsSyncingGlobalVotes(true);
     syncTimeoutRef.current = setTimeout(async () => {
       try {
+        const duelRecordToSend = pendingDuelRecordRef.current || undefined;
+        const swipeRecordToSend = pendingSwipeRecordRef.current || undefined;
+        pendingDuelRecordRef.current = null;
+        pendingSwipeRecordRef.current = null;
+
         await pushRemoteSharedState({
           version: 2,
           updatedAt: Date.now(),
@@ -826,6 +836,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
           deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+          duelRecord: duelRecordToSend,
+          swipeRecord: swipeRecordToSend,
         });
         hasPendingPushRef.current = false;
         setLastGlobalSyncTime(Date.now());
@@ -849,6 +861,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
           deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+          duelRecord: pendingDuelRecordRef.current || undefined,
+          swipeRecord: pendingSwipeRecordRef.current || undefined,
         });
         hasPendingPushRef.current = false;
       }
@@ -864,6 +878,8 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           activeDynamic: latestStateRef.current.activeDynamic,
           dynamics: latestStateRef.current.dynamics,
           deletedPhotoIds: latestStateRef.current.deletedPhotoIds,
+          duelRecord: pendingDuelRecordRef.current || undefined,
+          swipeRecord: pendingSwipeRecordRef.current || undefined,
         });
         hasPendingPushRef.current = false;
       }
@@ -978,6 +994,18 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     isUserActionRef.current = true;
 
+    const devId = getOrCreateDeviceId();
+    const voteId = `${devId}__${dynKey}__${pairKey}`;
+    pendingDuelRecordRef.current = {
+      voteId,
+      deviceId: devId,
+      dynamicId: dynKey,
+      pairKey,
+      winnerId,
+      loserId,
+      timestamp: Date.now(),
+    };
+
     setUserVotedDuelPairs((prev) => {
       if (prev.includes(pairKey)) return prev;
       const next = [...prev, pairKey];
@@ -1035,6 +1063,17 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     isUserActionRef.current = true;
+
+    const devId = getOrCreateDeviceId();
+    const swipeId = `${devId}__${dynKey}__${photoId}`;
+    pendingSwipeRecordRef.current = {
+      swipeId,
+      deviceId: devId,
+      dynamicId: dynKey,
+      photoId,
+      liked,
+      timestamp: Date.now(),
+    };
 
     // Register user vote in this dynamic
     setUserVotedPhotoIds((prev) => {
@@ -1165,6 +1204,34 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const nextDeletedIds = Array.from(new Set([...(latestStateRef.current.deletedPhotoIds || []), photoId]));
     setDeletedPhotoIds(nextDeletedIds);
 
+    // Sanitize active dynamic and past dynamics so deleted photo never appears in Top 3 or podiums
+    setActiveDynamic((prevActive) => {
+      if (!prevActive) return null;
+      const filteredRanked = (prevActive.allRankedPhotos || []).filter((p) => p.id !== photoId);
+      const newTop3 = filteredRanked.slice(0, 3);
+      const updated = {
+        ...prevActive,
+        allRankedPhotos: filteredRanked,
+        top3: newTop3,
+      };
+      latestStateRef.current.activeDynamic = updated;
+      return updated;
+    });
+
+    setDynamics((prevDynamics) => {
+      const updatedDynamics = prevDynamics.map((dyn) => {
+        const filteredRanked = (dyn.allRankedPhotos || []).filter((p) => p.id !== photoId);
+        const newTop3 = filteredRanked.slice(0, 3);
+        return {
+          ...dyn,
+          allRankedPhotos: filteredRanked,
+          top3: newTop3,
+        };
+      });
+      latestStateRef.current.dynamics = updatedDynamics;
+      return updatedDynamics;
+    });
+
     setPhotos((prev) => {
       const updatedPhotos = prev.filter((p) => p.id !== photoId);
       latestStateRef.current.photos = updatedPhotos;
@@ -1217,7 +1284,9 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!activeDynamic || activeDynamic.isClosed) return;
     isUserActionRef.current = true;
 
+    const deletedSet = new Set(latestStateRef.current.deletedPhotoIds || []);
     const rankedSnapshots: PhotoSnapshot[] = [...photos]
+      .filter((p) => !deletedSet.has(p.id))
       .sort((a, b) => b.points - a.points)
       .map((p) => ({
         id: p.id,
@@ -1473,6 +1542,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         resetAllData,
         clearLocalCache,
         deletePhoto,
+        deletedPhotoIds,
         deviceId: getOrCreateDeviceId(),
         hasUserVotedPhoto,
         hasUserVotedDuelPair,

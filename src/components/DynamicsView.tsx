@@ -14,9 +14,20 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
     isVotingOpen,
     timeRemainingSeconds,
     isAdmin,
+    deletedPhotoIds,
   } = usePhotos();
 
   const [selectedSession, setSelectedSession] = useState<DynamicSession | null>(null);
+
+  const deletedSet = new Set(deletedPhotoIds || []);
+
+  const getCleanRankedPhotos = (session: DynamicSession): PhotoSnapshot[] => {
+    return (session.allRankedPhotos || []).filter((p) => !deletedSet.has(p.id));
+  };
+
+  const getCleanTop3 = (session: DynamicSession): PhotoSnapshot[] => {
+    return getCleanRankedPhotos(session).slice(0, 3);
+  };
 
   // Format seconds to hh:mm:ss
   const formatTimer = (totalSeconds: number | null): string => {
@@ -41,6 +52,10 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
 
   // If a specific session top 3 modal/page is selected
   if (selectedSession) {
+    const cleanRanked = getCleanRankedPhotos(selectedSession);
+    const cleanTop3 = cleanRanked.slice(0, 3);
+    const remainingRanked = cleanRanked.slice(3);
+
     return (
       <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-20">
         {/* Back header */}
@@ -73,7 +88,7 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
           <div className="flex flex-wrap gap-4 mt-3 text-xs text-neutral-400">
             <span>Votos totales emitidos: <strong className="text-white">{selectedSession.totalVotesAtClose}</strong></span>
             <span>•</span>
-            <span>Fotografías participantes: <strong className="text-white">{selectedSession.allRankedPhotos.length}</strong></span>
+            <span>Fotografías participantes: <strong className="text-white">{cleanRanked.length}</strong></span>
           </div>
         </div>
 
@@ -83,13 +98,13 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
             Podio de Honor • Top 3 Fotografías Ganadoras
           </h2>
 
-          {selectedSession.top3.length === 0 ? (
+          {cleanTop3.length === 0 ? (
             <div className="p-8 text-center bg-neutral-900 rounded-3xl text-neutral-400 text-sm">
-              No hubo fotografías registradas en el cierre de esta dinámica.
+              No hubo fotografías registradas o activas en el cierre de esta dinámica.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {selectedSession.top3.map((photo: PhotoSnapshot, idx: number) => {
+              {cleanTop3.map((photo: PhotoSnapshot, idx: number) => {
                 const medals = ['1er Lugar', '2do Lugar', '3er Lugar'];
                 const badges = [
                   'bg-amber-400 text-neutral-950',
@@ -148,13 +163,13 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
         </div>
 
         {/* REST OF RANKING */}
-        {selectedSession.allRankedPhotos.length > 3 && (
+        {remainingRanked.length > 0 && (
           <div className="space-y-3">
             <h3 className="text-lg font-bold text-white mb-4">
-              Puestos Restantes ({selectedSession.allRankedPhotos.length - 3})
+              Puestos Restantes ({remainingRanked.length})
             </h3>
 
-            {selectedSession.allRankedPhotos.slice(3).map((photo, index) => (
+            {remainingRanked.map((photo, index) => (
               <div
                 key={photo.id}
                 className="flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:p-5 rounded-2xl bg-neutral-900/80 gap-4"
@@ -328,7 +343,7 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
 
                   {/* Top 3 mini previews */}
                   <div className="flex items-center gap-2 mb-4">
-                    {session.top3.slice(0, 3).map((p, i) => (
+                    {getCleanTop3(session).map((p) => (
                       <div
                         key={p.id}
                         className="w-12 h-12 rounded-xl overflow-hidden bg-neutral-950 shrink-0"
@@ -341,8 +356,8 @@ export const DynamicsView: React.FC<DynamicsViewProps> = ({ onGoToVoting, onGoTo
                         />
                       </div>
                     ))}
-                    {session.top3.length === 0 && (
-                      <span className="text-xs text-neutral-600">Sin imágenes registradas</span>
+                    {getCleanTop3(session).length === 0 && (
+                      <span className="text-xs text-neutral-600">Sin imágenes activas registradas</span>
                     )}
                   </div>
                 </div>

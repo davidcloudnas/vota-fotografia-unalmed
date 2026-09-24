@@ -1062,7 +1062,109 @@ function saveState(data) {
     finalPhotos.push(photoMap[allKeys[k]]);
   }
 
-  // 3. Votos totales acumulados
+  // 2.1 Convertir imágenes base64 a archivos reales en Google Drive para que aparezcan físicamente en la carpeta
+  var folder = null;
+  for (var fp = 0; fp < finalPhotos.length; fp++) {
+    var photoItem = finalPhotos[fp];
+    if (photoItem && photoItem.imageUrl && photoItem.imageUrl.indexOf("data:image/") === 0 && !photoItem.driveFileId) {
+      try {
+        if (!folder) folder = getTargetFolder();
+        var matches = photoItem.imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (matches && matches[2]) {
+          var mimeType = matches[1];
+          var base64Data = matches[2];
+          var decodedBytes = Utilities.base64Decode(base64Data);
+          var safeTitle = (photoItem.title || "foto").replace(/[^a-zA-Z0-9]/g, "_").substring(0, 30);
+          var ext = mimeType.indexOf("png") !== -1 ? ".png" : (mimeType.indexOf("webp") !== -1 ? ".webp" : ".jpg");
+          var fileName = safeTitle + "_" + photoItem.id + ext;
+          var blob = Utilities.newBlob(decodedBytes, mimeType, fileName);
+          var createdFile = folder.createFile(blob);
+          try {
+            createdFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          } catch(e) {}
+          photoItem.driveFileId = createdFile.getId();
+          photoItem.driveWebViewLink = createdFile.getUrl();
+          photoItem.imageUrl = "https://lh3.googleusercontent.com/d/" + createdFile.getId();
+          photoItem.syncedToDrive = true;
+        }
+      } catch(errUpload) {
+        console.warn("No se pudo crear archivo en Drive:", errUpload);
+      }
+    }
+  }
+
+  // 3. LEDGER INMUTABLE DE ENFRENTAMIENTOS Y VOTOS POR DISPOSITIVO (Cero pérdida de concurrencia y anti-fraude)
+  var recordedDuels = existing.recordedDuels || {};
+  var recordedSwipes = existing.recordedSwipes || {};
+
+  // 3.1 Procesar nuevo enfrentamiento único si se envía en este push
+  if (data.duelRecord && data.duelRecord.voteId) {
+    var vId = String(data.duelRecord.voteId);
+    // Solo si este dispositivo NO ha registrado este enfrentamiento previamente en la base de datos
+    if (!recordedDuels[vId]) {
+      recordedDuels[vId] = {
+        winnerId: data.duelRecord.winnerId,
+        loserId: data.duelRecord.loserId,
+        deviceId: data.duelRecord.deviceId,
+        pairKey: data.duelRecord.pairKey,
+        dynamicId: data.duelRecord.dynamicId,
+        timestamp: data.duelRecord.timestamp || Date.now()
+      };
+
+      var wId = data.duelRecord.winnerId;
+      var lId = data.duelRecord.loserId;
+
+      if (photoMap[wId]) {
+        photoMap[wId].matchesPlayed = (photoMap[wId].matchesPlayed || 0) + 1;
+        photoMap[wId].matchesWon = (photoMap[wId].matchesWon || 0) + 1;
+      }
+      if (photoMap[lId]) {
+        photoMap[lId].matchesPlayed = (photoMap[lId].matchesPlayed || 0) + 1;
+      }
+
+      // Cálculo de rating Elo justo y exacto
+      if (photoMap[wId] && photoMap[lId]) {
+        var pw = photoMap[wId].points || 1200;
+        var pl = photoMap[lId].points || 1200;
+        var expW = 1 / (1 + Math.pow(10, (pl - pw) / 400));
+        var expL = 1 / (1 + Math.pow(10, (pw - pl) / 400));
+        photoMap[wId].points = Math.round(pw + 32 * (1 - expW));
+        photoMap[lId].points = Math.max(800, Math.round(pl + 32 * (0 - expL)));
+      }
+
+      // Sumar exactamente 1 voto al contador global
+      existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+    }
+  }
+
+  // 3.2 Procesar nuevo swipe único si se envía en este push
+  if (data.swipeRecord && data.swipeRecord.swipeId) {
+    var sId = String(data.swipeRecord.swipeId);
+    if (!recordedSwipes[sId]) {
+      recordedSwipes[sId] = {
+        photoId: data.swipeRecord.photoId,
+        liked: Boolean(data.swipeRecord.liked),
+        deviceId: data.swipeRecord.deviceId,
+        dynamicId: data.swipeRecord.dynamicId,
+        timestamp: data.swipeRecord.timestamp || Date.now()
+      };
+
+      var targetPhoto = photoMap[data.swipeRecord.photoId];
+      if (targetPhoto) {
+        if (data.swipeRecord.liked) {
+          targetPhoto.swipeLikes = (targetPhoto.swipeLikes || 0) + 1;
+          targetPhoto.points = (targetPhoto.points || 1200) + 10;
+        } else {
+          targetPhoto.swipePasses = (targetPhoto.swipePasses || 0) + 1;
+          targetPhoto.points = Math.max(800, (targetPhoto.points || 1200) - 4);
+        }
+      }
+
+      existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+    }
+  }
+
+  // 3.3 Votos totales acumulados
   var totalVotes = Math.max(existing.totalVotesCount || 0, data.totalVotesCount || 0);
 
   // 4. Registro de dispositivos
@@ -1074,9 +1176,33 @@ function saveState(data) {
     };
   }
 
-  // 5. Dinámicas
-  var activeDyn = data.activeDynamic !== undefined ? data.activeDynamic : existing.activeDynamic;
-  var dynamics = Array.isArray(data.dynamics) && data.dynamics.length > 0 ? data.dynamics : (existing.dynamics || []);
+  // 5. Dinámicas: purgar permanentemente fotos eliminadas del podio y rankings
+  var rawActive = data.activeDynamic !== undefined ? data.activeDynamic : existing.activeDynamic;
+  var rawDynamics = Array.isArray(data.dynamics) && data.dynamics.length > 0 ? data.dynamics : (existing.dynamics || []);
+
+  function cleanDynamic(dyn) {
+    if (!dyn) return dyn;
+    var filteredRanked = (dyn.allRankedPhotos || []).filter(function(p) { return p && p.id && !deletedMap[p.id]; });
+    var newTop3 = filteredRanked.slice(0, 3);
+    return {
+      id: dyn.id,
+      title: dyn.title,
+      description: dyn.description,
+      startedAt: dyn.startedAt,
+      durationHours: dyn.durationHours,
+      closedAt: dyn.closedAt,
+      isClosed: dyn.isClosed,
+      totalVotesAtClose: dyn.totalVotesAtClose,
+      allRankedPhotos: filteredRanked,
+      top3: newTop3
+    };
+  }
+
+  var activeDyn = rawActive ? cleanDynamic(rawActive) : null;
+  var cleanDynamics = [];
+  for (var cdi = 0; cdi < rawDynamics.length; cdi++) {
+    cleanDynamics.push(cleanDynamic(rawDynamics[cdi]));
+  }
 
   var finalState = {
     version: 2,
@@ -1086,7 +1212,9 @@ function saveState(data) {
     deletedPhotoIds: allDeletedIds,
     devices: devices,
     activeDynamic: activeDyn,
-    dynamics: dynamics
+    dynamics: cleanDynamics,
+    recordedDuels: recordedDuels,
+    recordedSwipes: recordedSwipes
   };
 
   var jsonStr = JSON.stringify(finalState, null, 2);
@@ -1168,22 +1296,24 @@ function testDrive() {
                         </ul>
                       </div>
 
-                      <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800/80 space-y-1">
+                      <div className="p-3 bg-neutral-950 rounded-xl border border-emerald-800/80 space-y-1">
                         <span className="font-bold text-emerald-400 block">
-                          Carpeta de Fotos y Velocidad Ultrarrápida
+                          Diferencias de Sincronización, Dinámicas y Google Drive (Versión 4.1)
                         </span>
                         <ul className="list-disc pl-3.5 space-y-1 text-neutral-400">
                           <li>
-                            <strong>¿Por qué antes no se mencionaba la carpeta de fotos?</strong> Anteriormente, el script solo guardaba un archivo <code>unalmed_database.json</code> y no leía los archivos de imagen (.jpg, .png) sueltos dentro de la carpeta. En esta <strong>Versión 4.0</strong>, el script escanea automáticamente tu carpeta de Google Drive (<code>FOLDER_ID</code>) y registra cualquier foto que subas allí.
+                            <strong>¿Por qué una foto eliminada seguía apareciendo en el Top?</strong> Las dinámicas guardan un resumen de resultados (podio Top 3) en el momento del cierre. Ahora, la app y el script purgan automáticamente cualquier fotografía eliminada de los podios y clasificaciones pasadas y presentes, reemplazándola de inmediato por la siguiente foto válida en el ranking.
                           </li>
                           <li>
-                            <strong>¿Por qué al forzar sincronización cambió el archivo en Drive?</strong> Si la app en tu navegador no tenía fotos cargadas en memoria y pulsabas "Forzar sincronización", el script anterior reemplazaba el archivo completo con la lista vacía. Ahora, con la <strong>fusión segura</strong>, el script NUNCA borra fotos de Drive aunque el cliente sincronice con 0 fotos; siempre combina y preserva el catálogo existente.
+                            <strong>¿Por qué antes no aparecían archivos de foto en la carpeta de Drive y solo estaba el JSON?</strong> Los estudiantes suben fotos desde sus navegadores sin iniciar sesión en Google. La app enviaba la imagen codificada en base64 dentro de <code>unalmed_database.json</code>. En esta <strong>Versión 4.1</strong>, el script de Google (que corre con tus permisos de Admin) extrae automáticamente ese base64 y crea el archivo físico <code>.jpg</code> dentro de tu carpeta de Drive, guardando solo el enlace directo en la base de datos para que no pese nada.
                           </li>
                           <li>
-                            <strong>¿Cómo recuperar fotos si se cambió el archivo?</strong> En Google Drive, haz clic derecho sobre <code>unalmed_database.json</code> &gt; <em>Información del archivo &gt; Historial de versiones</em>. Puedes restaurar la versión anterior con 1 clic. Además, el botón <strong>"🔄 Cargar / Recuperar Fotos de Drive"</strong> arriba vuelve a indexar las imágenes de tu carpeta.
+                            <strong>Diferencia: Sincronización Normal vs Forzar Sincronización:</strong>
+                            <br />• <em>Sincronización Normal (Background):</em> Se ejecuta sola cada 8 segundos y cuando alguien vota. Lee lo de Drive y lo combina (merge) con lo nuevo de cada usuario sin sobreescribir.
+                            <br />• <em>Forzar Sincronización (Admin Push):</em> Es un comando exclusivo del administrador que envía todo lo que tienes en pantalla para que la base de datos en Drive sea exactamente idéntica a tu vista.
                           </li>
                           <li>
-                            <strong>¿Por qué tardaba 1 minuto?</strong> Google Drive realizaba búsquedas lentas en todo el disco. Ahora con <code>FOLDER_ID</code> directo y <code>LockService</code>, responde en menos de 1 segundo.
+                            <strong>¿Por qué algunos enfrentamientos de otros dispositivos no eran registrados?</strong> Si varios dispositivos votaban casi al mismo tiempo, el script anterior comparaba con <code>Math.max</code> en vez de sumar enfrentamientos concurrentes, o si el Administrador pulsaba "Forzar Sincronización" teniendo en su pantalla datos antiguos (ej: 0 votos), su estado desactualizado aplastaba los duelos que otros dispositivos habían registrado. <em>Consejo:</em> Antes de forzar una sincronización, pulsa siempre <strong>"🔄 Cargar / Recuperar Fotos de Drive"</strong> para tener en tu pantalla los votos más recientes de la comunidad.
                           </li>
                         </ul>
                       </div>

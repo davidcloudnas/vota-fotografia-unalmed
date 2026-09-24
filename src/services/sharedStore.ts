@@ -2,6 +2,25 @@ import { Photo, DynamicSession, CommentItem } from '../types';
 import { APP_CONFIG } from '../config';
 import { getOrCreateDeviceId } from '../utils/deviceId';
 
+export interface DuelRecord {
+  voteId: string;
+  deviceId: string;
+  dynamicId: string;
+  pairKey: string;
+  winnerId: string;
+  loserId: string;
+  timestamp: number;
+}
+
+export interface SwipeRecord {
+  swipeId: string;
+  deviceId: string;
+  dynamicId: string;
+  photoId: string;
+  liked: boolean;
+  timestamp: number;
+}
+
 export interface SharedAppState {
   version: number;
   updatedAt: number;
@@ -13,6 +32,10 @@ export interface SharedAppState {
   deviceId?: string;
   action?: string;
   photoId?: string;
+  duelRecord?: DuelRecord;
+  swipeRecord?: SwipeRecord;
+  recordedDuels?: Record<string, DuelRecord>;
+  recordedSwipes?: Record<string, SwipeRecord>;
 }
 
 /**
@@ -578,11 +601,27 @@ export function mergeAppState(
     hasChanges = true;
   }
 
+  const sanitizeDynamic = (dyn: DynamicSession | null): DynamicSession | null => {
+    if (!dyn) return null;
+    const filteredRanked = (dyn.allRankedPhotos || []).filter(
+      (p) => p && p.id && !allDeletedIds.has(p.id)
+    );
+    const newTop3 = filteredRanked.slice(0, 3);
+    return {
+      ...dyn,
+      allRankedPhotos: filteredRanked,
+      top3: newTop3,
+    };
+  };
+
+  const cleanActiveDynamic = sanitizeDynamic(mergedActiveDynamic);
+  const cleanDynamics = mergedDynamics.map((d) => sanitizeDynamic(d)!);
+
   return {
     photos: mergedPhotos,
     totalVotesCount: newTotalVotes,
-    activeDynamic: mergedActiveDynamic,
-    dynamics: mergedDynamics,
+    activeDynamic: cleanActiveDynamic,
+    dynamics: cleanDynamics,
     deletedPhotoIds: Array.from(allDeletedIds),
     hasChanges,
   };
