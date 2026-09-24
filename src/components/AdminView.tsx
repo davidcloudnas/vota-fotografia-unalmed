@@ -761,30 +761,30 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <div className="flex items-center justify-between">
                     <div>
                       <span className="font-bold text-amber-400 text-sm block">
-                        Código Google Apps Script (Versión 5.0 — Muro Temporal & Anti-Duplicación):
+                        Código Google Apps Script (Versión 5.2 — Puntuaciones Exactas & Duelos Consistentes):
                       </span>
                       <span className="text-[11px] text-neutral-400">
-                        Blindaje contra resurrección de fotos/dinámicas viejas y solución a las 5 copias en Drive.
+                        Puntuaciones ELO reales sin límite inferior, conteo exacto de duelos (1 voto = 1 duelo) y anti-duplicación.
                       </span>
                     </div>
                     <button
                       type="button"
                       onClick={() => {
                         const code = `// =========================================================================================
-// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 5.1 - ANTI-DUPLICACIÓN EXACTA DE DRIVE)
+// GOOGLE APPS SCRIPT PARA FOTOGRAFÍA UNALMED (VERSIÓN 5.2 - PUNTUACIONES EXACTAS Y SIN DUPLICAR DUELOS)
 // =========================================================================================
-// CARACTERÍSTICAS DE LA VERSIÓN 5.1:
-// 1. Detección Inteligente de Nombres: Si un archivo tiene formato <titulo>_<unal-user-XXXXX>,
-//    el script lo vincula a la foto canónica en vez de duplicarla con el nombre feo en la galería.
-// 2. Filtro Anti-Duplicados Activo: Purga en tiempo real cualquier foto redundante de Drive.
-// 3. Muro Temporal Inmutable (lastPurgeTimestamp): Impide resurrección de fotos de teléfonos viejos.
-// 4. Fin a las copias múltiples en Drive (reutilización de archivos).
+// CARACTERÍSTICAS DE LA VERSIÓN 5.2:
+// 1. Puntuaciones Reales sin Límite Inferior: Los puntajes ELO se guardan con total precisión en Google Drive.
+// 2. Conteo de Duelos Consistente (1 voto = 1 duelo): Elimina el conteo doble en los enfrentamientos.
+// 3. Detección Inteligente de Nombres: Si un archivo tiene formato <titulo>_<unal-user-XXXXX>,
+//    el script lo vincula a la foto canónica en vez de duplicarla.
+// 4. Muro Temporal Inmutable (lastPurgeTimestamp) y Reutilización de Archivos en Drive.
 
 var FOLDER_ID = "ID_DE_TU_CARPETA_DE_DRIVE_AQUI"; // Pega aquí el ID de tu carpeta de Google Drive
 var DB_FILENAME = "unalmed_database.json";
 
 // In-Memory RAM Cache Key (máximo 45 segundos para que los cambios se reflejen de inmediato)
-var CACHE_KEY = "UNALMED_GLOBAL_STATE_V5_1";
+var CACHE_KEY = "UNALMED_GLOBAL_STATE_V5_2";
 
 function doGet(e) {
   var isPing = e && e.parameter && (e.parameter.ping === "1" || e.parameter.test === "1");
@@ -1051,12 +1051,17 @@ function deduplicatePhotoList(photosList) {
       var match = item.title ? item.title.match(/(unal-user-\d+)/) : null;
       var canonical = (match && userMap[match[1]]) || (dfid && driveIdMap[dfid]);
       if (canonical && canonical.id !== item.id) {
-        canonical.points = Math.max(canonical.points || 1200, item.points || 1200);
-        canonical.matchesPlayed = Math.max(canonical.matchesPlayed || 0, item.matchesPlayed || 0);
-        canonical.matchesWon = Math.max(canonical.matchesWon || 0, item.matchesWon || 0);
-        canonical.swipeLikes = Math.max(canonical.swipeLikes || 0, item.swipeLikes || 0);
-        canonical.swipePasses = Math.max(canonical.swipePasses || 0, item.swipePasses || 0);
+        var canAct = (canonical.matchesPlayed || 0) + (canonical.swipeLikes || 0) + (canonical.swipePasses || 0);
+        var itemAct = (item.matchesPlayed || 0) + (item.swipeLikes || 0) + (item.swipePasses || 0);
+        if (itemAct > canAct) {
+          canonical.points = item.points !== undefined ? item.points : canonical.points;
+          canonical.matchesPlayed = item.matchesPlayed || 0;
+          canonical.matchesWon = item.matchesWon || 0;
+          canonical.swipeLikes = item.swipeLikes || 0;
+          canonical.swipePasses = item.swipePasses || 0;
+        }
         if (dfid && !canonical.driveFileId) canonical.driveFileId = dfid;
+        if (item.driveWebViewLink && !canonical.driveWebViewLink) canonical.driveWebViewLink = item.driveWebViewLink;
         continue; // OMITIR DUPLICADO
       }
 
@@ -1298,6 +1303,23 @@ function saveState(data) {
         photoMap[inc.id] = inc;
       } else {
         var cur = photoMap[inc.id];
+        var curActivity = (cur.matchesPlayed || 0) + (cur.swipeLikes || 0) + (cur.swipePasses || 0);
+        var incActivity = (inc.matchesPlayed || 0) + (inc.swipeLikes || 0) + (inc.swipePasses || 0);
+
+        var finalPts = cur.points !== undefined ? cur.points : 1200;
+        var finalMatches = cur.matchesPlayed || 0;
+        var finalWins = cur.matchesWon || 0;
+        var finalLikes = cur.swipeLikes || 0;
+        var finalPasses = cur.swipePasses || 0;
+
+        if (incActivity >= curActivity) {
+          finalPts = inc.points !== undefined ? inc.points : finalPts;
+          finalMatches = inc.matchesPlayed || 0;
+          finalWins = inc.matchesWon || 0;
+          finalLikes = inc.swipeLikes || 0;
+          finalPasses = inc.swipePasses || 0;
+        }
+
         photoMap[inc.id] = {
           id: inc.id,
           title: inc.title || cur.title,
@@ -1308,11 +1330,11 @@ function saveState(data) {
           driveFileId: inc.driveFileId || cur.driveFileId,
           driveWebViewLink: inc.driveWebViewLink || cur.driveWebViewLink,
           syncedToDrive: inc.syncedToDrive || cur.syncedToDrive,
-          points: Math.max(cur.points || 1200, inc.points || 1200),
-          matchesPlayed: Math.max(cur.matchesPlayed || 0, inc.matchesPlayed || 0),
-          matchesWon: Math.max(cur.matchesWon || 0, inc.matchesWon || 0),
-          swipeLikes: Math.max(cur.swipeLikes || 0, inc.swipeLikes || 0),
-          swipePasses: Math.max(cur.swipePasses || 0, inc.swipePasses || 0),
+          points: finalPts,
+          matchesPlayed: finalMatches,
+          matchesWon: finalWins,
+          swipeLikes: finalLikes,
+          swipePasses: finalPasses,
           comments: (cur.comments && cur.comments.length >= (inc.comments || []).length) ? cur.comments : (inc.comments || []),
           createdAt: cur.createdAt || inc.createdAt || "Hoy"
         };
@@ -1388,27 +1410,25 @@ function saveState(data) {
           timestamp: duelTs
         };
 
+        // Si incomingPhotos no incluía las fotos (p. ej. llamada API directa sin catálogo),
+        // actualizar estadísticas aquí sin límite inferior.
         var wId = data.duelRecord.winnerId;
         var lId = data.duelRecord.loserId;
-
-        if (photoMap[wId]) {
+        if ((!incomingPhotos || incomingPhotos.length === 0) && photoMap[wId] && photoMap[lId]) {
           photoMap[wId].matchesPlayed = (photoMap[wId].matchesPlayed || 0) + 1;
           photoMap[wId].matchesWon = (photoMap[wId].matchesWon || 0) + 1;
-        }
-        if (photoMap[lId]) {
           photoMap[lId].matchesPlayed = (photoMap[lId].matchesPlayed || 0) + 1;
-        }
-
-        if (photoMap[wId] && photoMap[lId]) {
-          var pw = photoMap[wId].points || 1200;
-          var pl = photoMap[lId].points || 1200;
+          var pw = photoMap[wId].points !== undefined ? photoMap[wId].points : 1200;
+          var pl = photoMap[lId].points !== undefined ? photoMap[lId].points : 1200;
           var expW = 1 / (1 + Math.pow(10, (pl - pw) / 400));
           var expL = 1 / (1 + Math.pow(10, (pw - pl) / 400));
           photoMap[wId].points = Math.round(pw + 32 * (1 - expW));
-          photoMap[lId].points = Math.max(800, Math.round(pl + 32 * (0 - expL)));
+          photoMap[lId].points = Math.round(pl + 32 * (0 - expL));
         }
 
-        existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+        if (!data.totalVotesCount) {
+          existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+        }
       }
     }
   }
@@ -1428,17 +1448,19 @@ function saveState(data) {
         };
 
         var targetPhoto = photoMap[data.swipeRecord.photoId];
-        if (targetPhoto) {
+        if (targetPhoto && (!incomingPhotos || incomingPhotos.length === 0)) {
           if (data.swipeRecord.liked) {
             targetPhoto.swipeLikes = (targetPhoto.swipeLikes || 0) + 1;
-            targetPhoto.points = (targetPhoto.points || 1200) + 10;
+            targetPhoto.points = (targetPhoto.points !== undefined ? targetPhoto.points : 1200) + 10;
           } else {
             targetPhoto.swipePasses = (targetPhoto.swipePasses || 0) + 1;
-            targetPhoto.points = Math.max(800, (targetPhoto.points || 1200) - 4);
+            targetPhoto.points = (targetPhoto.points !== undefined ? targetPhoto.points : 1200) - 4;
           }
         }
 
-        existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+        if (!data.totalVotesCount) {
+          existing.totalVotesCount = (existing.totalVotesCount || 0) + 1;
+        }
       }
     }
   }

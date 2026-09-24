@@ -694,7 +694,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             driveWebViewLink: df.webViewLink,
             syncedToDrive: true,
             description: 'Fotografía sincronizada desde la carpeta pública de Google Drive.',
-            points: 1200 + (driveFiles.length - idx) * 3,
+            points: 1200,
             matchesPlayed: 0,
             matchesWon: 0,
             swipeLikes: 0,
@@ -1102,7 +1102,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const expectedLoser = 1 / (1 + Math.pow(10, (winner.points - loser.points) / 400));
 
       const newWinnerPoints = Math.round(winner.points + K * (1 - expectedWinner));
-      const newLoserPoints = Math.max(800, Math.round(loser.points + K * (0 - expectedLoser)));
+      const newLoserPoints = Math.round(loser.points + K * (0 - expectedLoser));
 
       return prev.map((p) => {
         if (p.id === winnerId) {
@@ -1175,7 +1175,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return {
             ...p,
             swipePasses: p.swipePasses + 1,
-            points: Math.max(800, p.points - 4),
+            points: p.points - 4,
           };
         }
       })

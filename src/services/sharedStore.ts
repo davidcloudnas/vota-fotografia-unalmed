@@ -573,16 +573,39 @@ export function mergeAppState(
       }
     });
 
-    const higherPoints = Math.max(localPhoto.points || 0, remotePhoto.points || 0);
-    const higherMatches = Math.max(localPhoto.matchesPlayed || 0, remotePhoto.matchesPlayed || 0);
-    const higherWins = Math.max(localPhoto.matchesWon || 0, remotePhoto.matchesWon || 0);
-    const higherSwipeLikes = Math.max(localPhoto.swipeLikes || 0, remotePhoto.swipeLikes || 0);
-    const higherSwipePasses = Math.max(localPhoto.swipePasses || 0, remotePhoto.swipePasses || 0);
+    const localActivity = (localPhoto.matchesPlayed || 0) + (localPhoto.swipeLikes || 0) + (localPhoto.swipePasses || 0);
+    const remoteActivity = (remotePhoto.matchesPlayed || 0) + (remotePhoto.swipeLikes || 0) + (remotePhoto.swipePasses || 0);
+
+    let chosenPoints = localPhoto.points ?? 1200;
+    let chosenMatches = localPhoto.matchesPlayed || 0;
+    let chosenWins = localPhoto.matchesWon || 0;
+    let chosenLikes = localPhoto.swipeLikes || 0;
+    let chosenPasses = localPhoto.swipePasses || 0;
+
+    if (remoteActivity > localActivity) {
+      chosenPoints = remotePhoto.points ?? 1200;
+      chosenMatches = remotePhoto.matchesPlayed || 0;
+      chosenWins = remotePhoto.matchesWon || 0;
+      chosenLikes = remotePhoto.swipeLikes || 0;
+      chosenPasses = remotePhoto.swipePasses || 0;
+    } else if (localActivity === remoteActivity) {
+      if (remotePhoto.points !== undefined && remotePhoto.points !== 1200 && localPhoto.points === 1200) {
+        chosenPoints = remotePhoto.points;
+      } else if (remotePhoto.points !== undefined) {
+        chosenPoints = remotePhoto.points;
+      }
+      chosenMatches = Math.max(localPhoto.matchesPlayed || 0, remotePhoto.matchesPlayed || 0);
+      chosenWins = Math.max(localPhoto.matchesWon || 0, remotePhoto.matchesWon || 0);
+      chosenLikes = Math.max(localPhoto.swipeLikes || 0, remotePhoto.swipeLikes || 0);
+      chosenPasses = Math.max(localPhoto.swipePasses || 0, remotePhoto.swipePasses || 0);
+    }
 
     if (
-      higherPoints !== localPhoto.points ||
-      higherMatches !== localPhoto.matchesPlayed ||
-      higherSwipeLikes !== localPhoto.swipeLikes ||
+      chosenPoints !== localPhoto.points ||
+      chosenMatches !== localPhoto.matchesPlayed ||
+      chosenWins !== localPhoto.matchesWon ||
+      chosenLikes !== localPhoto.swipeLikes ||
+      chosenPasses !== localPhoto.swipePasses ||
       localPhoto.imageUrl !== remotePhoto.imageUrl
     ) {
       hasChanges = true;
@@ -595,11 +618,11 @@ export function mergeAppState(
       location: remotePhoto.location || localPhoto.location,
       description: remotePhoto.description || localPhoto.description,
       imageUrl: remotePhoto.imageUrl || localPhoto.imageUrl,
-      points: higherPoints,
-      matchesPlayed: higherMatches,
-      matchesWon: higherWins,
-      swipeLikes: higherSwipeLikes,
-      swipePasses: higherSwipePasses,
+      points: chosenPoints,
+      matchesPlayed: chosenMatches,
+      matchesWon: chosenWins,
+      swipeLikes: chosenLikes,
+      swipePasses: chosenPasses,
       comments: Array.from(commentMap.values()),
       driveFileId: remotePhoto.driveFileId || localPhoto.driveFileId,
       driveWebViewLink: remotePhoto.driveWebViewLink || localPhoto.driveWebViewLink,
@@ -641,13 +664,17 @@ export function mergeAppState(
 
       const canonical = canonicalByTitle || canonicalByDrive;
       if (canonical && canonical.id !== p.id) {
-        // Merge stats into canonical photo if higher
-        canonical.points = Math.max(canonical.points || 1200, p.points || 1200);
-        canonical.matchesPlayed = Math.max(canonical.matchesPlayed || 0, p.matchesPlayed || 0);
-        canonical.matchesWon = Math.max(canonical.matchesWon || 0, p.matchesWon || 0);
-        canonical.swipeLikes = Math.max(canonical.swipeLikes || 0, p.swipeLikes || 0);
-        canonical.swipePasses = Math.max(canonical.swipePasses || 0, p.swipePasses || 0);
+        const canActivity = (canonical.matchesPlayed || 0) + (canonical.swipeLikes || 0) + (canonical.swipePasses || 0);
+        const pActivity = (p.matchesPlayed || 0) + (p.swipeLikes || 0) + (p.swipePasses || 0);
+        if (pActivity > canActivity) {
+          canonical.points = p.points ?? canonical.points;
+          canonical.matchesPlayed = p.matchesPlayed || 0;
+          canonical.matchesWon = p.matchesWon || 0;
+          canonical.swipeLikes = p.swipeLikes || 0;
+          canonical.swipePasses = p.swipePasses || 0;
+        }
         if (fid && !canonical.driveFileId) canonical.driveFileId = fid;
+        if (p.driveWebViewLink && !canonical.driveWebViewLink) canonical.driveWebViewLink = p.driveWebViewLink;
         hasChanges = true;
         return; // Exclude duplicate from catalog!
       }
