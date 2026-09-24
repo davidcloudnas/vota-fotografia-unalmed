@@ -52,6 +52,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     syncGlobalVotes,
     publishCurrentStateToGlobal,
     refreshFromCloud,
+    purgeEverythingToZero,
   } = usePhotos();
 
   const [passwordInput, setPasswordInput] = useState('');
@@ -80,6 +81,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [testSyncResult, setTestSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
   const [clearCacheMsg, setClearCacheMsg] = useState('');
+  const [isPurgingAll, setIsPurgingAll] = useState(false);
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [purgeConfirmInput, setPurgeConfirmInput] = useState('');
 
   // Descarga del archivo JSON de auditoría completo (estado real de Drive y votos)
   const handleDownloadAuditJson = () => {
@@ -997,6 +1001,53 @@ function getSavedStateFromDrive() {
 }
 
 function saveState(data) {
+  // 0. RESET TOTAL Y PURGA ABSOLUTA A CERO
+  if (data && (data.action === "RESET_EVERYTHING_PURGE_ALL" || data.purgeAll === true)) {
+    var folder = getTargetFolder();
+    
+    // Mover a la papelera todos los archivos de fotos dentro de la carpeta para no dejar rastro
+    try {
+      var allFiles = folder.getFiles();
+      while (allFiles.hasNext()) {
+        var f = allFiles.next();
+        if (f.getName() !== DB_FILENAME) {
+          try {
+            f.setTrashed(true);
+          } catch(errTrash) {}
+        }
+      }
+    } catch(errFiles) {
+      console.warn("Aviso limpiando archivos de Drive:", errFiles);
+    }
+
+    var cleanZeroState = {
+      version: 2,
+      updatedAt: Date.now(),
+      totalVotesCount: 0,
+      photos: [],
+      deletedPhotoIds: [],
+      devices: {},
+      activeDynamic: null,
+      dynamics: [],
+      recordedDuels: {},
+      recordedSwipes: {}
+    };
+
+    var cleanJson = JSON.stringify(cleanZeroState, null, 2);
+    var dbFile = getDatabaseFile();
+    if (dbFile) {
+      dbFile.setContent(cleanJson);
+    } else {
+      folder.createFile(DB_FILENAME, cleanJson, MimeType.PLAIN_TEXT);
+    }
+
+    try {
+      CacheService.getScriptCache().remove(CACHE_KEY);
+    } catch(e) {}
+
+    return cleanZeroState;
+  }
+
   var existing = getSavedStateFromDrive();
 
   // 1. Unir IDs de fotos eliminadas (lista negra permanente)
@@ -1245,6 +1296,12 @@ function testDrive() {
   Logger.log("✓ Total de votos globales: " + (state.totalVotesCount || 0));
   Logger.log("✓ Fotos eliminadas en lista negra: " + (state.deletedPhotoIds || []).length);
   Logger.log("✓ Dispositivos registrados: " + Object.keys(state.devices || {}).length);
+}
+
+// FUNCIÓN PARA EJECUTAR MANUALMENTE EN APPS SCRIPT Y BORRARLO TODO A CERO:
+function BORRAR_TODO_Y_RESETEAR_A_CERO() {
+  saveState({ action: "RESET_EVERYTHING_PURGE_ALL", purgeAll: true });
+  Logger.log("✓ SE HA BORRADO TODO SIN EXCEPCIÓN: Todas las fotos, duelos, dinámicas y votos reseteados a 0.");
 }`;
                         navigator.clipboard.writeText(code);
                         setScriptCopied(true);
@@ -1777,6 +1834,94 @@ function testDrive() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+
+          {/* SECCIÓN 4: ZONA DE PELIGRO • RESET TOTAL Y PURGA ABSOLUTA A CERO */}
+          <div className="p-6 sm:p-8 rounded-3xl bg-rose-950/20 border border-rose-800/40 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <span className="inline-block px-3 py-1 rounded-full bg-rose-600/30 text-rose-300 text-xs font-bold mb-1">
+                  Zona de Peligro • Irreversible
+                </span>
+                <h2 className="text-xl font-bold text-white tracking-tight">
+                  Borrar TODO sin excepción y resetear a 0
+                </h2>
+                <p className="text-xs text-rose-200/80 font-light mt-1 max-w-2xl leading-relaxed">
+                  Elimina permanentemente todo el catálogo de fotografías, limpia los archivos de imagen dentro de tu carpeta de Google Drive, reinicia el contador de votos a 0, vacía el historial de duelos (ledger) y elimina todas las dinámicas pasadas y activas.
+                </p>
+              </div>
+
+              {!showPurgeModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPurgeModal(true);
+                    setPurgeConfirmInput('');
+                  }}
+                  className="px-5 py-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs transition cursor-pointer shadow-lg shrink-0 self-start sm:self-auto"
+                >
+                  🔴 Borrar TODO sin excepción
+                </button>
+              )}
+            </div>
+
+            {/* Modal / Caja de confirmación explícita para evitar accidentes */}
+            {showPurgeModal && (
+              <div className="p-5 rounded-2xl bg-neutral-950 border border-rose-700/60 space-y-4 animate-fadeIn">
+                <div className="space-y-1.5">
+                  <h4 className="text-sm font-bold text-rose-400 flex items-center gap-2">
+                    <span>⚠️</span> ¿Estás completamente seguro de borrar absolutamente TODO?
+                  </h4>
+                  <p className="text-xs text-neutral-300 leading-relaxed">
+                    Se borrarán las <strong className="text-white">{photos.length} fotos</strong>, los <strong className="text-white">{totalVotesCount} votos</strong>, todas las dinámicas y se moverán a la papelera los archivos de imagen en tu carpeta de Drive. Para proceder, escribe la palabra <strong className="text-rose-400 font-mono">BORRAR</strong> a continuación:
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                  <input
+                    type="text"
+                    value={purgeConfirmInput}
+                    onChange={(e) => setPurgeConfirmInput(e.target.value)}
+                    placeholder='Escribe "BORRAR" aquí'
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-rose-500 font-mono"
+                  />
+
+                  <button
+                    type="button"
+                    disabled={purgeConfirmInput.trim().toUpperCase() !== 'BORRAR' || isPurgingAll}
+                    onClick={async () => {
+                      setIsPurgingAll(true);
+                      try {
+                        const ok = await purgeEverythingToZero();
+                        if (ok) {
+                          setShowPurgeModal(false);
+                          setPurgeConfirmInput('');
+                          setSuccessNotice('✓ Se ha borrado absolutamente TODO sin excepción. Base de datos reseteada a 0.');
+                          setTimeout(() => setSuccessNotice(''), 6000);
+                        }
+                      } finally {
+                        setIsPurgingAll(false);
+                      }
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:bg-neutral-800 disabled:text-neutral-500 text-white font-bold text-xs transition cursor-pointer disabled:cursor-not-allowed shadow-md"
+                  >
+                    {isPurgingAll ? 'Borrando todo...' : 'Confirmar y Purgar Todo a 0'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isPurgingAll}
+                    onClick={() => {
+                      setShowPurgeModal(false);
+                      setPurgeConfirmInput('');
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-semibold transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                </div>
               </div>
             )}
           </div>

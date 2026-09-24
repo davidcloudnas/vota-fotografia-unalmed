@@ -161,11 +161,6 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploaded }) => {
           <span className="text-xs uppercase tracking-widest text-neutral-400 font-semibold">
             Aporte a la Comunidad
           </span>
-          {driveFolder && (
-            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-xs font-semibold">
-              Repositorio Drive Público Activo
-            </span>
-          )}
         </div>
         <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
           Subir Fotografía

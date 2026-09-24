@@ -62,6 +62,7 @@ interface PhotoContextType {
   clearLocalCache: () => Promise<void>;
   deletePhoto: (photoId: string) => void;
   deletedPhotoIds: string[];
+  purgeEverythingToZero: () => Promise<boolean>;
 
   // Voter integrity (anti-fraud & single vote per photo/duel per user)
   deviceId: string;
@@ -1446,6 +1447,74 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }).catch((e) => console.warn('Error al vaciar datos remotos:', e));
   };
 
+  const purgeEverythingToZero = async (): Promise<boolean> => {
+    isUserActionRef.current = true;
+    setIsGlobalUpdating(true, 'Borrando absolutamente TODO sin excepción y reseteando base de datos a 0...');
+    try {
+      // 1. Envío explícito a Google Apps Script para purgar archivos y base de datos
+      await pushRemoteSharedState({
+        version: 2,
+        updatedAt: Date.now(),
+        totalVotesCount: 0,
+        photos: [],
+        activeDynamic: null,
+        dynamics: [],
+        deletedPhotoIds: [],
+        action: 'RESET_EVERYTHING_PURGE_ALL',
+      });
+
+      // 2. Limpieza de todo el estado local
+      setPhotos([]);
+      setTotalVotesCount(0);
+      setActiveDuel(null);
+      setDynamics([]);
+      setActiveDynamic(null);
+      setDeletedPhotoIds([]);
+      setUserVotedPhotoIds([]);
+      setUserVotedDuelPairs([]);
+
+      // 3. Limpieza de almacenamiento en navegador
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(VOTES_COUNTER_KEY);
+      localStorage.removeItem(DYNAMICS_KEY);
+      localStorage.removeItem(ACTIVE_DYNAMIC_KEY);
+      localStorage.removeItem(DRIVE_FOLDER_KEY);
+      localStorage.removeItem(DELETED_PHOTOS_KEY);
+
+      try {
+        Object.keys(localStorage).forEach((key) => {
+          if (
+            key.startsWith('unalmed_') ||
+            key.startsWith('fotografia_unalmed_')
+          ) {
+            if (key !== ADMIN_AUTH_KEY) {
+              localStorage.removeItem(key);
+            }
+          }
+        });
+      } catch {}
+
+      latestStateRef.current = {
+        photos: [],
+        totalVotesCount: 0,
+        activeDynamic: null,
+        dynamics: [],
+        deletedPhotoIds: [],
+      };
+
+      setUserNotice('✓ Se ha borrado TODO sin excepción. Base de datos, fotos y votos reseteados a 0.');
+      setTimeout(() => setUserNotice(null), 8000);
+      return true;
+    } catch (err) {
+      console.error('Error al purgar todo:', err);
+      setUserNotice('Aviso: Hubo un inconveniente al purgar en la nube.');
+      setTimeout(() => setUserNotice(null), 6000);
+      return false;
+    } finally {
+      setIsGlobalUpdating(false);
+    }
+  };
+
   const clearLocalCache = async () => {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(VOTES_COUNTER_KEY);
@@ -1540,6 +1609,7 @@ export const PhotoProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         openPhotoModal,
         closePhotoModal,
         resetAllData,
+        purgeEverythingToZero,
         clearLocalCache,
         deletePhoto,
         deletedPhotoIds,
