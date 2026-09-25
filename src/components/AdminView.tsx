@@ -1827,7 +1827,7 @@ function BORRAR_TODO_Y_RESETEAR_A_CERO() {
                     <input
                       type="number"
                       min="0.1"
-                      step="0.5"
+                      step="any"
                       required
                       value={customHours}
                       onChange={(e) => setCustomHours(e.target.value)}
